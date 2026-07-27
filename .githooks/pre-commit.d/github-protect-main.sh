@@ -74,6 +74,23 @@ if command -v jq >/dev/null 2>&1; then
   case "$passed" in '' | null) passed='[]' ;; esac
 fi
 
+# ALL github-actions check-run NAMES on the default-branch HEAD (ANY conclusion)
+# — the evidence that lets the matrix-parent prune below fire ONLY on positive
+# proof a required context has vanished. Unlike `passed` (success-only, the
+# promotion gate) this keeps pending/failed runs too, because the prune's only
+# question is "does a check by this EXACT name still RUN on main at all". A real,
+# independent required check whose latest PR run merely fell outside the bounded
+# discovery window above still runs here, so it is never mistaken for a stale
+# matrix parent and stripped. jq required; empty on failure, and the prune treats
+# an empty list as "no evidence" and preserves the context (fail-open).
+head_names='[]'
+if command -v jq >/dev/null 2>&1; then
+  head_names=$(gh api --paginate "repos/$slug/commits/$branch/check-runs?per_page=100" \
+    --jq '.check_runs[]? | select(.app.slug=="github-actions") | .name' 2>/dev/null \
+    | jq -sRc 'split("\n") | map(select(length > 0)) | unique')
+  case "$head_names" in '' | null) head_names='[]' ;; esac
+fi
+
 # Current protection facts in one call: PR reviews present? admins enforced?
 # plus the currently-required checks from the modern `checks` field (normalized
 # to {context}, sorted). Each value is emitted on its OWN line, NOT through
@@ -123,17 +140,24 @@ if [ -n "$desired" ] && [ "$desired" != "[]" ]; then
   # the bare "Build" is NEVER reported as a check run again — but the additive
   # union above keeps requiring it, so every PR blocks forever on a check that
   # can't complete (enforce_admins means not even an admin merge escapes). Prune a
-  # required context C when discovery shows matrix children "C (…)" but no bare
-  # "C". Only prunes a shadowed parent: a context that is itself a discovered
-  # check, or a standalone check from a workflow whose run fell outside the
-  # discovery window, is always kept.
-  want=$(printf '%s\n%s' "$want" "$desired" | jq -sc '
-    .[0] as $want | (.[1] | map(.context)) as $dctx |
+  # required context C ONLY with POSITIVE evidence it has vanished: discovery
+  # shows a matrix child "C (…)", AND bare C is confirmed ABSENT from the default
+  # branch HEAD's own check-runs ($head_names). Name-prefix alone is too weak —
+  # discovery is bounded to recent PR runs, so an independent required "C" can be
+  # absent from discovery while an UNRELATED "C (…)" is present; keying off that
+  # would strip a still-valid gate. Requiring C to also be missing from the fresh
+  # HEAD check-run set rules that out: a real, active C still runs on main and
+  # stays in $head_names, so only a genuinely refactored-away parent is pruned. No
+  # HEAD evidence (empty $head_names) → preserve (fail-open, never strip).
+  want=$(printf '%s\n%s\n%s' "$want" "$desired" "$head_names" | jq -sc '
+    .[0] as $want | (.[1] | map(.context)) as $dctx | .[2] as $head |
     $want | map(
       (.context) as $c |
       select(
         ($dctx | index($c)) != null                       # itself a discovered check → keep
         or (($dctx | any(startswith($c + " ("))) | not)   # no matrix child shadows it → keep
+        or (($head | length) == 0)                        # no HEAD evidence → keep (fail-open)
+        or (($head | index($c)) != null)                  # still runs on main HEAD → keep (not stale)
       )
     )')
 elif [ -n "$current" ] && [ "$current" != "[]" ]; then
