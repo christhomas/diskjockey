@@ -188,3 +188,91 @@ the whole write path end to end.
 its risk is concentrated at the front. But it should not be started before X1, because
 X1 will teach us things about the writable-device plumbing and the test harness that
 B1 would otherwise have to discover independently.
+
+---
+
+## 7. Findings from the first attempt at the log writer — 2026-08-25
+
+X1 (in-place data overwrite) and X2a (inode attribute updates) both landed and are
+validated against the kernel. The log writer was started and **deliberately stopped**;
+this section records what was established so a later attempt does not re-derive it.
+
+### The record layout, confirmed against real bytes
+
+Read off a filesystem the kernel wrote, not from documentation, so these are facts
+rather than recollections:
+
+| Field | Observed |
+|---|---|
+| `h_version` | 2 |
+| `h_fmt` | 1 (`XLOG_FMT_LINUX_LE`) |
+| `h_size` | 32768 — the iclog size |
+| Record geometry | 1 header block + 63 data blocks = 32 KiB, `h_len` = 32256 |
+| `h_prev_block` | the previous record's start block; −1 for the first |
+| `h_lsn` | `(cycle << 32) | block`, so ordering by the whole `u64` orders by cycle |
+
+**The cycle stamp is confirmed.** Each data basic block's first four bytes are replaced
+by the cycle number, and the displaced word is stored in `h_cycle_data[k]` for block
+`k`. The unmount record makes this unmistakable: its data block reads `0x00000001`
+(the cycle) where the op header's `oh_tid` should be, and `h_cycle_data[0]` holds
+`0xb0c0d0d0`, which is the real tid.
+
+**The unmount record's shape**, which is the simplest record and therefore the right
+first thing to write:
+
+```
+op header:  oh_tid = <nonzero>  oh_len = 8  oh_clientid = 0xaa  oh_flags = 0x20
+payload:    magic 0x556e ("Un"), then padding to 8 bytes
+h_num_logops = 1,  h_len = 512
+```
+
+### The blocker: `h_crc` could not be reproduced
+
+Ten candidate spans were computed against five real records and **none matched**:
+header block plus data at `h_len`, plus data rounded to whole basic blocks, header
+truncated to `sizeof(xlog_rec_header)`, header alone, data alone, and each of those
+again with the cycle stamp undone and with `h_cycle_data` zeroed.
+
+CRC32C itself is not in question — the same routine verifies superblocks, inodes and
+directory blocks in this crate. What is unknown is **what bytes the log's checksum
+covers, and at what point in the write they are taken.**
+
+Until that is settled, a log writer cannot be trusted, and an untrusted one is worse
+than none: a record the kernel accepts but misreads would be replayed over good
+metadata.
+
+### One lead worth following first
+
+**The initial unmount record `mkfs` writes has `h_crc = 0`**, on a v5 filesystem whose
+other records carry real checksums, and the kernel mounts that volume without
+complaint. That strongly suggests zero is understood as "not computed" and tolerated.
+
+If that holds for a record at the head — not merely one buried behind newer ones — then
+a first log writer could emit zero-CRC records and sidestep the unknown entirely. That
+is a cheap experiment and it is the one to run next: write an unmount record with
+`h_crc = 0` onto a clean fixture and see whether the checker and the kernel still accept
+the log.
+
+It is a lead, not a conclusion. It has not been tested.
+
+### Revised estimate
+
+The log writer is a larger piece of work than either phase delivered so far, and its
+failure mode is worse. It needs, beyond the checksum question: transaction reservation,
+tail-LSN management, iclog alignment, the item formats for each structure logged, and
+the logged inode layout, which differs from the on-disk one.
+
+**It deserves its own project rather than a phase.** Everything after it in §3 — X3
+onward, and all of Btrfs — depends on it, so the sequencing in this document still
+stands; the estimate for reaching it does not.
+
+### What remains available without it
+
+Worth checking before assuming the write path is blocked:
+
+- **Truncate to a smaller size.** Setting `di_size` down while leaving the blocks
+  allocated breaks no invariant — post-EOF blocks are legal and XFS keeps them
+  routinely — so it may fall inside the same envelope as X2a. Cheap to test with the
+  existing oracle, and it would make truncate work.
+- **Growing into an already-written extent past `di_size`.** Rare, since preallocation
+  produces *unwritten* extents, which are refused for good reason.
