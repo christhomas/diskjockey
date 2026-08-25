@@ -20,7 +20,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 target="aarch64-apple-darwin"
 GREEN='\033[0;32m'; NC='\033[0m'
 
-for fs in ext4 ntfs erofs squashfs; do
+for fs in ext4 ntfs erofs squashfs xfs btrfs; do
     bundle="$root/rust-bundles/dj-${fs}-bundle"
     out="$root/lib/bundle_${fs}"
     [ -d "$bundle" ] || { echo "missing bundle crate: $bundle" >&2; exit 1; }

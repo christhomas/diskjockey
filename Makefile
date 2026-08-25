@@ -155,7 +155,7 @@ vendor-bundles:
 	@scripts/build-bundles.sh
 
 vendor-bundles-clean:
-	rm -rf lib/bundle_ext4 lib/bundle_ntfs lib/bundle_erofs lib/bundle_squashfs
+	rm -rf lib/bundle_ext4 lib/bundle_ntfs lib/bundle_erofs lib/bundle_squashfs lib/bundle_xfs lib/bundle_btrfs
 
 # go-networkfs builds each driver from NETWORKFS_DRIVERS plus a combined libnetworkfs.a
 # dispatcher. Xcode build phases may override DRIVERS via env var to trim the
@@ -204,15 +204,15 @@ install-agent:
 # local-dev mode — it overrides the driver + the shared am-fs-core to the
 # local vendor/ submodule — then restore the crates.io-clean state before you
 # commit or build for distribution. See scripts/dev-link.sh for the rationale.
-#   make dev-link   FS=ext4               # ext4 | ntfs | erofs | squashfs
+#   make dev-link   FS=ext4               # ext4 | ntfs | erofs | squashfs | xfs | btrfs
 #   make dev-link   FS=ext4 EXTRA=am-img-qcow2   # also co-develop a reader
 #   make dev-unlink FS=ext4
 dev-link:
-	@test -n "$(FS)" || { echo "usage: make dev-link FS=<ext4|ntfs|erofs|squashfs> [EXTRA='am-img-qcow2 ...']"; exit 2; }
+	@test -n "$(FS)" || { echo "usage: make dev-link FS=<ext4|ntfs|erofs|squashfs|xfs|btrfs> [EXTRA='am-img-qcow2 ...']"; exit 2; }
 	@scripts/dev-link.sh $(FS) $(EXTRA)
 
 dev-unlink:
-	@test -n "$(FS)" || { echo "usage: make dev-unlink FS=<ext4|ntfs|erofs|squashfs>"; exit 2; }
+	@test -n "$(FS)" || { echo "usage: make dev-unlink FS=<ext4|ntfs|erofs|squashfs|xfs|btrfs>"; exit 2; }
 	@scripts/dev-unlink.sh $(FS)
 
 # ---------------------------------------------------------------------------
