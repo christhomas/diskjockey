@@ -23,7 +23,7 @@
 		<key>EXExtensionPointIdentifier</key>
 		<string>com.apple.fskit.fsmodule</string>
 		<key>EXExtensionPrincipalClass</key>
-		<string>ErofsFileSystem</string>
+		<string>XfsFileSystem</string>
 		<key>FSActivateOptionSyntax</key>
 		<dict>
 			<key>shortOptions</key>
@@ -557,10 +557,10 @@
 		</dict>
 		<key>FSPersonalities</key>
 		<dict>
-			<key>erofs</key>
+			<key>xfs</key>
 			<dict>
 				<key>FSName</key>
-				<string>erofs</string>
+				<string>xfs</string>
 				<key>FSSubType</key>
 				<integer>0</integer>
 				<key>FSfileObjectsAreCaseSensitive</key>
@@ -570,7 +570,7 @@
 		<key>FSRequiresSecurityScopedPathURLResources</key>
 		<false/>
 		<key>FSShortName</key>
-		<string>fserofs</string>
+		<string>fsxfs</string>
 		<key>FSSupportsBlockResources</key>
 		<true/>
 		<key>FSSupportsKernelOffloadedIO</key>

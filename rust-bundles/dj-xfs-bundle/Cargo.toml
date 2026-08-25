@@ -1,0 +1,28 @@
+# Consumer-side aggregator for the DiskJockeyXFS FSKit extension.
+# Depends on the PUBLISHED crates.io releases rather than local paths, so
+# every crate's am-fs-core resolves to one published am-fs-core and cargo
+# links a single std. Two copies of std in one staticlib produce a
+# duplicate _rust_eh_personality at link time.
+# Not published itself.
+[package]
+name = "dj-xfs-bundle"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "dj_xfs_bundle"
+crate-type = ["staticlib"]
+
+[dependencies]
+am-fs-xfs = "0.2.0"
+am-img-qcow2 = "0.4.2"
+am-img-vhd = "0.3.2"
+am-img-vhdx = "0.3.2"
+am-img-vmdk = "0.3.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+panic = "unwind"

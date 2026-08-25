@@ -29,3 +29,7 @@ diskjockey-backend/test-mount/mount*/
 # semi-public, but we keep them out of the repo so a fork/clone
 # doesn't inherit our app registrations.
 DiskJockeyApplication/Resources/OAuthClients.json
+
+# Local environment files, never committed.
+.env.local
+.env.local.*
