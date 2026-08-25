@@ -10,13 +10,16 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "am-fs-btrfs"
-version = "0.2.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb75a4b668a47540be2660efd8f9a91a9d6b2be27f320a292db1e110fce02464"
+checksum = "bb14dbf27f15fca88759c322278ab21ac50c47383e04ca38c5db0e942599cee1"
 dependencies = [
  "am-fs-core",
+ "am-lzo1x",
  "blake2b_simd",
  "crc32c",
+ "miniz_oxide 0.9.1",
+ "ruzstd 0.9.0",
  "sha2",
  "twox-hash",
 ]
@@ -35,7 +38,7 @@ checksum = "807db48a42f9329feaae3e61de4dbfa895075f385d3e48155098700982136265"
 dependencies = [
  "am-fs-core",
  "flate2",
- "ruzstd",
+ "ruzstd 0.8.3",
 ]
 
 [[package]]
@@ -65,6 +68,12 @@ checksum = "cc5a1861a5db32da366fe7596bb1c8376a4fc64e04a95f90a90cd426870bfc11"
 dependencies = [
  "am-fs-core",
 ]
+
+[[package]]
+name = "am-lzo1x"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "762388655758a7548847ae271a4ec6b0552a53a8b4bec1fa68e7f2064312d042"
 
 [[package]]
 name = "arrayvec"
@@ -168,7 +177,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
- "miniz_oxide",
+ "miniz_oxide 0.8.9",
 ]
 
 [[package]]
@@ -198,6 +207,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "miniz_oxide"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
+dependencies = [
+ "adler2",
+]
+
+[[package]]
 name = "rustc_version"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -211,6 +229,15 @@ name = "ruzstd"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7c1c839d570d835527c9a5e4db7cb2198683a988cb9d7293fc8674e6bd58fc8"
+dependencies = [
+ "twox-hash",
+]
+
+[[package]]
+name = "ruzstd"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a252f5e20f038fe7b4ea53e073e65398d652c864cc162fc77c56c2f13717b888"
 dependencies = [
  "twox-hash",
 ]
