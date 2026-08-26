@@ -49,41 +49,29 @@ to UEFI targets, so it is never built here.
 
 ## Transitive Go dependencies (go-networkfs)
 
-The Go drivers in `go-networkfs` pull a 117-module transitive closure
-across MIT / BSD / ISC / Apache-2.0 / MPL-2.0. Two MPL-2.0 entries
-warrant explicit acknowledgment per their notice requirements, and they
-are the only copyleft-licensed components anywhere in this project:
+The Go drivers pull a large transitive closure across MIT / BSD / ISC / Apache-2.0.
 
-### MPL-2.0 — Mozilla Public License 2.0
+**No copyleft.** Two MPL-2.0 modules — `hashicorp/errwrap` and `hashicorp/go-multierror`
+— used to be here, reached through the FTP driver's client library. They no longer ship:
+that client was replaced with `github.com/antimatter-studios/goftp`, which depends on
+nothing outside the Go standard library.
 
-Component: `github.com/hashicorp/errwrap`
-License: MPL-2.0
-Source: github.com/hashicorp/errwrap
-Notice: This component is licensed under the Mozilla Public License,
-v. 2.0. The MPL is a *file-scope* weak copyleft license — only
-modifications to MPL-licensed files themselves trigger source-disclosure
-obligations. Static linking of unmodified MPL files into a closed-source
-binary is explicitly permitted.
+```
+$ go list -deps ./... | grep -c hashicorp
+0
+```
 
-Component: `github.com/hashicorp/go-multierror`
-License: MPL-2.0
-Source: github.com/hashicorp/go-multierror
-Notice: Same MPL-2.0 terms as above. Both MPL components enter through
-the **FTP** driver and nothing else:
+## Forks maintained for this project
 
-    go-networkfs/ftp -> github.com/jlaffaye/ftp
-                     -> hashicorp/go-multierror -> hashicorp/errwrap
+Two dependencies are forks. Both keep their upstream's licence unchanged, and both carry
+our changes as pull requests offered upstream rather than as private divergence.
 
-`github.com/jlaffaye/ftp` is the sole importer; verified with
-`go list -deps`. (An earlier revision of this file attributed them to
-the SMB driver, which does not import either.)
+| Component | License | Fork of | Why |
+|---|---|---|---|
+| `antimatter-studios/goftp` | MIT | `secsy/goftp` | needed a dial hook for byte counting; the previous client pulled in MPL-2.0 |
+| `antimatter-studios/go-smb2` | BSD-2-Clause | `hirochachacha/go-smb2` | GO-2026-5051, which upstream records as having no fix |
 
-The full text of the Mozilla Public License 2.0 is available at:
-<https://www.mozilla.org/en-US/MPL/2.0/>
-
-DiskJockey ships these components unmodified. To obtain the source for
-either, fetch the upstream repository at the version pinned in
-`vendor/go-networkfs/go.sum`.
+The SMB fix is Arash Payan's, backported from `cloudsoda/go-smb2` (also BSD-2-Clause).
 
 ## Per-driver SDK licenses (network filesystem clients)
 
