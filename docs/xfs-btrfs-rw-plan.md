@@ -397,3 +397,68 @@ establish them.
 **One thing that has not changed**: a record whose checksum does not verify is
 discarded as a torn write, so a wrong implementation still fails safe. That
 remains the reason this is worth attempting incrementally.
+
+## 10. The log writer works — 2026-08-26
+
+The kernel replays a record `rust-fs-xfs` wrote. That is the phase-boundary this
+document has been working towards since §3: every metadata change beyond a
+single-inode in-place edit needs a log record, and now one can be produced.
+
+`Filesystem::log_inode_core` logs a new core for an inode **without touching the
+inode**. Mounting the volume makes the kernel's own recovery apply it. The proof is
+`tests/log_replay_oracle.rs`: root's mode logged 0755 → 0751, the inode on disk left
+alone, our own driver then refusing the volume as dirty, the kernel mounting it and
+reading 0751, and the reference checker finding nothing wrong.
+
+Leaving the inode alone is the whole design of that test. A driver that wrote both
+would pass a mode check while proving nothing about the log.
+
+### The field that was missing, and how it fails
+
+A logged inode does not name its own address. It names the inode **cluster** holding
+it — `ilf_blkno`, `ilf_len`, `ilf_boffset` — and the replayer reads that whole cluster
+to apply the change. Those three were zero, and the failure is worth recognising
+because it does not point at itself:
+
+```
+XFS (loop2): Starting recovery (logdev: internal)
+XFS (loop2): metadata I/O error in "xlog_recover_items_pass2" at daddr 0x0 len 0 error 5
+XFS (loop2): log mount/recovery failed: error -5
+```
+
+The record checksums. The kernel finds it, trusts it, and *starts* recovery. Then it
+reads block 0 for 0 bytes and refuses the mount, naming neither the inode nor the
+record. Every visible signal says the record was fine.
+
+The cluster size is not in the record — it comes from the geometry: 8 KiB scaled by
+how many 256-byte minimum inodes fit in one of this filesystem's, truncated to whole
+blocks. Confirmed against 7,307 inode items the kernel wrote across four allocation
+groups and four geometries.
+
+### Why this stayed safe to develop
+
+A record whose checksum does not verify is discarded as a torn write: the kernel
+truncates the head back and the transaction simply never happened. A record with a
+**zero** checksum fails the mount instead. So a wrong encoding costs an experiment,
+not a filesystem — which is what made it reasonable to iterate against a real kernel
+rather than trying to get it right on paper first.
+
+### What comes next
+
+**Rename within one directory**, for the reasons §6 already gave: 8 ops, 2 items, both
+inode items, no buffer item, no allocator metadata. It is a strict extension of the
+shape that now works — the same START, transaction header, inode format, inode core
+and COMMIT skeleton, plus one more inode item and one fork-data op.
+
+The op sequences for twelve operations are in the crate's `docs/transaction-shapes.md`.
+
+### An unrelated bug the same week's work surfaced
+
+Worth recording because of *how* it was found rather than what it was. Fixtures built
+by a stress generator — rather than by someone deciding what to put in them — caught
+`read_link` returning the block holding a symlink target instead of the target, within
+a minute of the first one existing.
+
+It had been wrong for as long as the function existed, and no hand-written fixture had
+ever contained a target long enough to leave the inode. The lesson generalises: the
+fixtures we choose test the cases we thought of.
