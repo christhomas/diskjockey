@@ -331,3 +331,69 @@ record whose content is small and fully known, and work from that.
 
 This is a research problem, not a task with an estimate, and it should be picked up as
 one.
+
+---
+
+## 9. The checksum is solved — 2026-08-26
+
+§7 and §8 describe this as a research problem with no estimate. It is
+neither any more.
+
+```
+h_crc = crc32c( header[0..328] with h_crc zeroed  ++  data[0..h_len] )
+```
+
+Two things were wrong in every earlier attempt:
+
+- **The header contributes 328 bytes**, `sizeof(xlog_rec_header)` with its
+  fields padded to the 8-byte alignment its `u64` members impose — not the
+  512-byte basic block it occupies on disk. The other 184 bytes are padding the
+  checksum never sees, and every contiguous-span sweep in §8 included them.
+- **The data is the stamped form**, cycle numbers already in place. The checksum
+  is taken after packing. Unstamped matches nothing.
+
+Verified against 37 checksummed records across 6 filesystems the kernel wrote;
+`rust-fs-xfs/tests/log_checksum_oracle.rs` holds it.
+
+### The method, which is the part worth keeping
+
+Guessing harder was not going to work — ten layouts had already been tried and
+all ten were wrong. What worked was a property of the algorithm rather than a
+better guess.
+
+**CRC32C is affine.** For two inputs of the same length, `crc(A) ^ crc(B)`
+depends only on where they differ; any unknown seed, final xor or constant
+prefix cancels. So a candidate span can be tested by whether it reproduces a
+*difference*, without being able to reproduce either absolute value.
+
+That turns an unbounded search into a bounded one, and it needs a pair of
+near-identical inputs:
+
+1. Build two filesystems identically — same `mkfs` arguments, and `-m uuid=` to
+   force the same UUID, or every byte differs.
+2. Make one minimal, different change in each. One byte of file data was enough;
+   261 bytes of the whole image differed.
+3. Find a record whose only real difference is a few bytes at a known offset.
+   One differed only in `h_cycle_data[0]`.
+4. Sweep span lengths for the one that reproduces the checksum difference.
+   Exactly one did: **840**.
+5. 840 = 328 + `h_len`, and 328 is the header struct rather than its block.
+
+The same technique applies to any checksum in either format whose coverage is
+unclear, and to the item formats still to be worked out — build two filesystems
+differing by one controlled thing and read the difference.
+
+### What this unblocks
+
+The log writer, and everything in §3 that depends on it: XFS allocation,
+inode allocation, directory modification and `bmbt` insertion — which is to say
+create, unlink, rename, and growing a file.
+
+The remaining unknowns are the item formats: `xfs_inode_log_format`, the logged
+inode layout, and the transaction framing around them. Those are structure
+rather than arithmetic, and the differential method above is the way to
+establish them.
+
+**One thing that has not changed**: a record whose checksum does not verify is
+discarded as a torn write, so a wrong implementation still fails safe. That
+remains the reason this is worth attempting incrementally.
