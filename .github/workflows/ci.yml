@@ -95,9 +95,16 @@ jobs:
         # fails with "'fs_<fs>.h' file not found".
         run: make vendor-fs-ext4 vendor-fs-ntfs vendor-fs-erofs vendor-fs-squashfs vendor-img-containers vendor-gonetworkfs vendor-bundles
 
-      # Shared with the pre-commit hook — single source of truth for pin validation.
+      # Same generator the pre-commit hook runs, in check mode. One
+      # implementation of "what commit is each library pinned to" lives in
+      # chores.yml; this and the hook both forward to it.
+      # scripts/check-vendor-pins.sh is superseded and nothing calls it.
+      #
+      # NOTE: this runner has no `chore` install step, and the vendor build
+      # step above already goes through the Makefile, which needs one too.
+      # Adding it is a separate decision from this change.
       - name: Validate vendor pins
-        run: scripts/check-vendor-pins.sh
+        run: chore pins:check
 
       - name: Install xcbeautify
         run: brew install xcbeautify

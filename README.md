@@ -351,23 +351,42 @@ git submodule update --init --recursive
 
 ### Build the vendored libraries
 
+Tasks are run with [`chore`](https://github.com/antimatter-studios/chore), which
+reads `chores.yml`:
+
 ```bash
-make vendor-all
+brew install antimatter-studios/tap/chore   # or: go install github.com/antimatter-studios/chore@latest
+chore --list                                # every task, with its arguments
+chore vendor:all
 ```
 
 This runs:
 
-1. `vendor-fs-ext4` — builds the Rust ext4 library into an XCFramework at `lib/fs_ext4/`.
-2. `vendor-fs-ntfs` — same for NTFS, into `lib/fs_ntfs/`.
-3. `vendor-gonetworkfs` — builds per-driver Go static libs (`libftp.a`, `libsftp.a`, …) plus the combined `libnetworkfs.a` dispatcher into `lib/go-networkfs/`.
+1. `bundles` — the per-extension aggregator staticlibs, which is what the app
+   actually links.
+2. `gonetworkfs` — per-driver Go static libs (`libftp.a`, `libsftp.a`, …) plus
+   the combined `libnetworkfs.a` dispatcher, into `lib/go-networkfs/`.
 
-Then regenerate protobuf bindings (one-shot, regenerate after `.proto` changes):
+Individual drivers take the filesystem as an argument rather than as part of the
+task name:
 
 ```bash
-make proto
+chore vendor ext4              # build one driver
+chore vendor ext4 --force      # rebuild even if unchanged
+chore vendor:clean ext4        # remove its output
 ```
 
-`make all` chains `vendor-all` + `proto`.
+Then regenerate protobuf bindings (one-shot, after `.proto` changes):
+
+```bash
+chore proto
+```
+
+`chore build` chains `bundles` + `gonetworkfs` + `proto`.
+
+The `Makefile` is a shim that forwards every old target to its task, so
+`make vendor-fs-ext4` still works. It exists so nothing breaks mid-migration and
+is meant to be deleted.
 
 ### Build the app + extensions
 
@@ -393,7 +412,7 @@ docker compose up
 After bumping any submodule, regenerate the human-readable pin manifest:
 
 ```bash
-make pins
+chore pins
 ```
 
-`VENDOR_PINS.txt` is committed alongside the submodule bump. `make pins-check` fails if it's stale — wire into CI when CI exists for this repo.
+`VENDOR_PINS.txt` is committed alongside the submodule bump. `chore pins:check` fails if it's stale — wire into CI when CI exists for this repo.

@@ -1,4 +1,19 @@
 #!/usr/bin/env bash
+# SUPERSEDED 2026-08-27 — NOTHING CALLS THIS. `chore pins:check` replaced it.
+#
+# It compares VENDOR_PINS.txt against `git submodule status`. The libraries
+# moved to SIBLING checkouts (../rust-fs-ext4 and friends) and `chore pins`
+# now reads those, so the file it validates no longer has a `vendor/` column
+# for it to match. Run as-is against the current manifest it exits 1 having
+# printed NOTHING AT ALL: `grep '^vendor/'` matches nothing, and under
+# `set -euo pipefail` that kills the assignment before any diagnostic runs.
+#
+# Left on disk deliberately rather than deleted. The callers are gone:
+#   .githooks/pre-commit.d/project-vendor-pins.sh  -> chore pins  + git add
+#   .github/workflows/ci.yml                       -> chore pins:check
+#
+# Everything below this banner is the old implementation, unchanged.
+#
 # check-vendor-pins.sh — validate that VENDOR_PINS.txt SHA column matches
 # the current submodule gitlinks.
 #

@@ -101,3 +101,58 @@ gg_cargo() {
     return 2
   fi
 }
+
+# --- chore (the task runner) --------------------------------------------------
+
+# Echo the path to a usable `chore`, or nothing (return 1).
+#
+# WHY A SEARCH AND NOT JUST `command -v`. A git hook does not run with your
+# login PATH. From a terminal `chore` is found; from Tower, VS Code or Xcode's
+# source control, PATH is frequently cut back to /usr/bin:/bin:/usr/sbin:/sbin,
+# and Homebrew's bin is not on it. A guard that forwards to `chore` would then
+# do nothing at all, from the client a lot of commits are made with.
+#
+# It looks for a chore and STOPS THERE. It does NOT check the version: chore
+# already refuses to run a file that needs a newer one, naming both versions
+# and the fix —
+#
+#   chore: chore 0.6.0 is too old: <file> requires chore_min_version 99.0.0.
+#     Upgrade with `brew upgrade chore`, or run an older copy of the file.
+#
+# — and diskjockey's chores.yml declares `chore_min_version`. A version test
+# here would be a second, worse copy of that, and it would drift.
+#
+# Windows is deliberately not guessed at. These hooks run under macOS git for a
+# macOS app; under Git Bash `command -v chore` already resolves chore.exe, and
+# the `.exe` probe below covers a PATH-less MSYS shell without anyone inventing
+# an install location they cannot test. No path here is speculative.
+gg_chore_path() {
+  local c d
+  if c=$(command -v chore 2>/dev/null) && [ -n "$c" ]; then
+    printf '%s' "$c"; return 0
+  fi
+  for d in /opt/homebrew/bin /usr/local/bin "$HOME/.local/bin" "$HOME/go/bin" \
+           "$HOME/bin" /opt/local/bin /usr/bin; do
+    [ -n "$d" ] || continue
+    if [ -x "$d/chore" ]; then printf '%s' "$d/chore"; return 0; fi
+    if [ -x "$d/chore.exe" ]; then printf '%s' "$d/chore.exe"; return 0; fi
+  done
+  return 1
+}
+
+# Print the standard "no chore anywhere" explanation on stderr.
+#
+# It lives here rather than in each guard so the brew line has ONE home. The
+# caller prints its own first line saying what it could not do, then calls this.
+#
+# A caller must FAIL after this, never skip. common.sh is otherwise fail-open by
+# design (see the header), and this is the documented exception alongside the
+# merge-commit guards: a guard that shrugs stops doing its job and reports
+# nothing, which is worse than the mistake it was written to prevent.
+gg_chore_not_found() {
+  echo "  This forwards to 'chore'. If you are committing from a GUI client, its PATH" >&2
+  echo "  is probably /usr/bin:/bin:/usr/sbin:/sbin and Homebrew's bin is not on it." >&2
+  echo "  Install it, or run the command from a terminal:" >&2
+  echo "    brew install antimatter-studios/tap/chore" >&2
+  echo "  See https://github.com/antimatter-studios/chore" >&2
+}

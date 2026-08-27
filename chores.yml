@@ -1,0 +1,919 @@
+version: "3"
+
+# DiskJockey's chores.
+#
+# This replaces a 278-line Makefile whose 35 targets were mostly the same
+# three tasks written out six times — one family per vendored driver, each
+# with a `-force` and a `-clean` variant. Make has no way to say "this task
+# takes a parameter", so the parameter became part of the target name and the
+# file grew linearly with the number of drivers.
+#
+# Here the driver is an argument:
+#
+#   chore vendor ext4              # was: make vendor-fs-ext4
+#   chore --force vendor ext4      # was: make vendor-fs-ext4-force
+#   chore vendor:clean ext4        # was: make vendor-fs-ext4-clean
+#
+# Adding a seventh driver is a word in a list rather than three new targets.
+#
+# WHERE THE BUILD KNOWLEDGE LIVES, since 2026-08-27. It used to live in
+# scripts/build-fs-<name>.sh — four scripts, 757 lines, byte-identical once
+# you normalise the driver name, of which three lines per script were about
+# the filesystem. It now lives in each library's own chores.yml, reached
+# through `includes:` pointing at SIBLING checkouts.
+#
+# What this file kept is the consumer's half and nothing else: which drivers
+# we consume, where the artifact lands, and whether it is stale. It does not
+# know the target triple or the cargo profile. The 34 lines of submodule
+# self-healing and the 101 lines of stamp-file freshness are gone rather than
+# moved — chore has sources:/generates:, and there are no submodules to heal.
+
+# 0.4.0 rebound a mistyped flag onto a different parameter. This file passes
+# a filesystem name to a task that deletes a directory tree, so a flag that
+# silently becomes another flag's value is not a risk worth carrying.
+chore_min_version: 0.6.0
+
+vars:
+  DISKJOCKEY_LIB: DiskJockeyLibrary
+  FILEPROVIDER_PROTOCOL: fileprovider
+
+  # go-networkfs builds one static lib per driver plus a combined
+  # libnetworkfs.a dispatcher, all consumed by the FileProvider via cgo.
+  #
+  # WHERE the artifact lands is ours; WHICH drivers exist is not. The list of
+  # eight lived here as NETWORKFS_DRIVERS and is now go-networkfs's, once. The
+  # source path is gone too — it is the `networkfs:` include, a sibling
+  # checkout, not ./vendor/go-networkfs.
+  NETWORKFS_OUT: lib/go-networkfs
+
+  # WHERE the diskprobe CLI lands. The NAME is not ours to choose: the Swift
+  # side looks for `lib/diskprobe/diskprobe` by that literal path
+  # (FSKitMountService.locateDiskprobe, AgentImpl.locateDiskprobe), so this
+  # var and those two functions have to agree and nothing checks that they do.
+  PROBE_OUT: lib/diskprobe
+
+  # The filesystem drivers. Each is a SIBLING checkout that owns its own
+  # build — see `includes:` below. This list is what `chore vendor` accepts
+  # and what `chore clean` sweeps; the build knowledge is not here.
+  FS_DRIVERS: ext4 ntfs squashfs erofs xfs btrfs
+
+  # Everything whose commit we pin. Siblings first, submodule fallback while
+  # both layouts exist. tabler-icons has no sibling checkout and is still a
+  # submodule; the pins task handles either.
+  PIN_LIBS: >-
+    go-networkfs
+    rust-fs-core rust-fs-ext4 rust-fs-ntfs rust-fs-squashfs
+    rust-fs-erofs rust-fs-xfs rust-fs-btrfs
+    rust-img-qcow2 rust-img-vhd rust-img-vhdx rust-img-vmdk
+    rust-partitions rust-blk-probe tabler-icons
+
+  # Disk-image container readers. Each is a SIBLING checkout that owns its own
+  # build — see `includes:` below. This list is what `chore img` builds and
+  # what `chore img:clean` sweeps.
+  #
+  # They each build to their own static lib and are deliberately NOT bundled
+  # into the filesystem libs — see `feedback_no_cross_domain_bundling` in the
+  # project memory. That is a statement about lib/img_* and lib/fs_*, and it is
+  # not what the app links: the FSKit extensions link one aggregator per
+  # extension out of rust-bundles/, which pulls the crates.io am-img-* in.
+  IMG_READERS: qcow2 vhd vhdx vmdk
+
+  # One aggregator staticlib per FSKit extension, so each extension links a
+  # single Rust staticlib with std embedded exactly once.
+  BUNDLES: ext4 ntfs erofs squashfs xfs btrfs
+
+  VENDOR_PINS_FILE: VENDOR_PINS.txt
+
+# Reap stale cargo artifacts once per invocation, in the background.
+#
+# The Rust builds are driven from HERE — `chore vendor` and `chore img` run
+# `cargo build --release` in a SIBLING checkout through `includes:`, and
+# `chore bundles` runs it in rust-bundles/. So the trigger belongs at this root
+# even though the app itself is Swift and the target/ directories are not.
+#
+# NOTE THAT THE SWEEP AND THE BUILDS NO LONGER COVER THE SAME GROUND.
+# sweep-target.sh walks THIS root, which reaps vendor/ and rust-bundles/. The
+# sibling checkouts at ../rust-* are where `chore vendor` and `chore img` now
+# put their target/ directories, and nothing here reaps those.
+#
+# Measured 2026-08-27: vendor/ held 14.4 GB of cargo output across 12 target
+# directories — rust-fs-ntfs 7.1 GB, rust-fs-ext4 5.5 GB — inside a 24 GB
+# vendor/. cargo never removes anything: each build emits codegen-unit objects
+# named by a content hash and leaves the previous set forever.
+#
+# NOT `cargo clean`, which would delete what the last build produced and make
+# every build cold. `cargo sweep --time N` takes only what nothing has touched.
+#
+# after_all runs on the way out whether the task passed or FAILED — a build
+# that breaks is when the most garbage gets made — and cannot change the
+# invoked task's exit status.
+#
+# vendor/*/test-disks/ is NOT swept: those are filesystem fixtures, not build
+# output, and cargo-sweep does not touch them.
+# Each driver OWNS its own build, AND ITS OWN OUTPUT DIRECTORY. diskjockey
+# declares which ones it consumes and where the copy lands; it does not know
+# the target triple, the cargo profile, or where cargo puts things.
+#
+# A LIBRARY DOES NOT WRITE INTO ITS CONSUMER, since 2026-08-27. Every library
+# here used to take an output directory — `staticlib <out>` — and write
+# straight into diskjockey/lib/. It now builds into its own dist/ and answers
+# `chore artifact` with the path; we copy from there. So a library can change
+# its output layout without every consumer knowing, and is usable with no
+# consumer at all. rust-blk-probe and `probe` below were the first pair to do
+# it and are the shape the rest copy.
+#
+# EVERY `artifact` HERE PRINTS A DIRECTORY, where rust-blk-probe's prints a
+# FILE. That crate produces one binary; these produce an archive plus one or
+# more headers, and go-networkfs produces eighteen files. So what a consumer
+# copies is the directory's CONTENTS.
+#
+# These point at SIBLING checkouts, not at vendor/. `dir:` is what makes that
+# work: the included task runs with the library as its working directory, so
+# its `cp target/<triple>/release/...` stays relative and resolves inside the
+# library. Nothing absolute is handed to it any more.
+#
+# `optional: true` on every one, because a missing sibling must not make this
+# whole file fail to parse — `chore proto` should still work in a checkout that
+# has none of them.
+#
+# WHAT THIS REPLACED, and it is deleted rather than left on disk, because a
+# dead build script that still runs is the thing somebody edits by mistake:
+#
+#   build-fs-{ext4,ntfs,squashfs,erofs}.sh   757 lines   -> the six fs includes
+#   build-img-containers.sh                  205 lines   -> the four img ones
+#   build-gonetworkfs.sh                     258 lines   -> networkfs:archives
+#
+# 1220 lines. `git show HEAD:scripts/<name>` reads any of them back.
+includes:
+  ext4:
+    taskfile: ../rust-fs-ext4
+    dir: ../rust-fs-ext4
+    optional: true
+  ntfs:
+    taskfile: ../rust-fs-ntfs
+    dir: ../rust-fs-ntfs
+    optional: true
+  squashfs:
+    taskfile: ../rust-fs-squashfs
+    dir: ../rust-fs-squashfs
+    optional: true
+  erofs:
+    taskfile: ../rust-fs-erofs
+    dir: ../rust-fs-erofs
+    optional: true
+  xfs:
+    taskfile: ../rust-fs-xfs
+    dir: ../rust-fs-xfs
+    optional: true
+  btrfs:
+    taskfile: ../rust-fs-btrfs
+    dir: ../rust-fs-btrfs
+    optional: true
+
+  # The disk-image container readers. Same contract, same `staticlib` +
+  # `artifact` pair, different domain — they read a container file and hand
+  # back a device, where the drivers above read a filesystem. They replace
+  # scripts/build-img-containers.sh.
+  qcow2:
+    taskfile: ../rust-img-qcow2
+    dir: ../rust-img-qcow2
+    optional: true
+  vhd:
+    taskfile: ../rust-img-vhd
+    dir: ../rust-img-vhd
+    optional: true
+  vhdx:
+    taskfile: ../rust-img-vhdx
+    dir: ../rust-img-vhdx
+    optional: true
+  vmdk:
+    taskfile: ../rust-img-vmdk
+    dir: ../rust-img-vmdk
+    optional: true
+
+  # THE CLI. Its task is `binary`, not `staticlib`, for the same reason the Go
+  # include below names its own: rust-blk-probe produces a single universal
+  # arm64+x86_64 EXECUTABLE that the app runs as a child process, not an
+  # archive and headers for the linker. A task called `staticlib` would be
+  # promising an artifact that does not exist.
+  #
+  # THE INCLUDE IS `blkprobe` AND THE BINARY IS `diskprobe`, and that is not a
+  # slip. The repository was renamed on extraction; the binary was not,
+  # because three Swift call sites invoke it by name.
+  #
+  # It replaces scripts/build-disk-probe.sh, which — unlike the six scripts
+  # named further up — is LEFT ON DISK, along with vendor/rust-disk-probe.
+  # Nothing calls either any more. Removing them was not this change's to make.
+  blkprobe:
+    taskfile: ../rust-blk-probe
+    dir: ../rust-blk-probe
+    optional: true
+
+  # Two libraries nothing here links, included anyway so `chore --list` shows
+  # the whole dependency set and a `core:test` is one command away rather than
+  # a `cd`. fs_core is embedded in every driver's archive already; partitions
+  # arrives inside rust-blk-probe. Neither has a task called from this file.
+  core:
+    taskfile: ../rust-fs-core
+    dir: ../rust-fs-core
+    optional: true
+  partitions:
+    taskfile: ../rust-partitions
+    dir: ../rust-partitions
+    optional: true
+
+  # THE GO ONE. Its task is `archives`, not `staticlib`, and the difference is
+  # not cosmetic: `go build -buildmode=c-archive` produces NINE archives with a
+  # generated header beside each, where a Rust `staticlib` produces one. A
+  # library that named it `staticlib` would be promising the singular artifact
+  # the Rust siblings give.
+  networkfs:
+    taskfile: ../go-networkfs
+    dir: ../go-networkfs
+    optional: true
+
+  # NOT INCLUDED, AND NOT AN OVERSIGHT: vendor/tabler-icons.
+  #
+  # It is tabler/tabler-icons — a third-party repository, MIT, that Chris does
+  # not control. The sibling model above is for repositories he does: it puts a
+  # chores.yml INSIDE the library, which is a change to that repository. We
+  # cannot make that change to somebody else's repo, and vendoring a fork to
+  # hold one file would be a worse trade than the `git submodule` it replaces.
+  #
+  # So tabler-icons stays a submodule at vendor/tabler-icons, keeps its pin in
+  # VENDOR_PINS.txt through the submodule branch of `pins:_generate`, and is
+  # consumed by scripts/sync-tabler-icons.rb, which copies the handful of SVGs
+  # we use into the asset catalog. Nothing about it needs a build.
+  #
+  # If you are here to "finish the job" by giving every vendored dependency a
+  # chores.yml: this one is finished. Leave it.
+
+lifecycle:
+  after_all:
+    - task: sweep
+
+tasks:
+  default:
+    desc: List the tasks
+    cmds:
+      - chore --list
+
+  # -------------------------------------------------------------------------
+  # Everything
+  # -------------------------------------------------------------------------
+
+  build:
+    desc: Build what the app links — bundles, go-networkfs, protobuf
+    # The FS extensions each link ONE per-extension bundle staticlib built
+    # from crates.io. The per-crate `vendor` tasks below remain for local
+    # builds and reference, but are no longer what the app links.
+    cmds:
+      - task: bundles
+      - task: gonetworkfs
+      - task: proto
+
+  proto:
+    desc: Generate the FileProvider protocol definitions from the .proto
+    cmds:
+      - |
+        printf '\nGenerating fileprovider protocol definitions...\n\n'
+        protoc -I={{.DISKJOCKEY_LIB}}/Protobuf \
+          --swift_opt=Visibility=Public \
+          --swift_out={{.DISKJOCKEY_LIB}}/ \
+          {{.DISKJOCKEY_LIB}}/Protobuf/{{.FILEPROVIDER_PROTOCOL}}.proto
+
+  # -------------------------------------------------------------------------
+  # Per-crate driver builds
+  # -------------------------------------------------------------------------
+
+  # ONE task for every driver, where there used to be four near-identical
+  # scripts. What is left here is the half that is genuinely diskjockey's:
+  # WHICH driver, and WHERE the copy lands. The build itself, AND ITS OUTPUT
+  # DIRECTORY, AND WHETHER IT IS STALE, all live in the library — reached as
+  # `chore -C ../rust-fs-<name> staticlib` rather than through the include, so
+  # that the build call and the `artifact` call below are the same shape.
+  #
+  # No `--force` flag: chore's own `--force` already ignores the up-to-date
+  # check, so `chore --force vendor ext4` is the same thing without a second
+  # spelling of it.
+  #
+  # FRESHNESS IS NOT DECLARED HERE, and that is deliberate rather than an
+  # omission. sources:/generates: on THIS task would have to be templated on
+  # {{.fs}}, and two things go wrong with that, both measured against chore
+  # 0.6.0 on 2026-08-27:
+  #
+  #   1. chore records a fingerprint via fingerprint.Save with a nil renderer
+  #      (internal/run/run.go:313), so a templated pattern is expanded against
+  #      its raw text, matches nothing, and stores the empty-set hash. The
+  #      task then NEVER registers as up to date.
+  #   2. The fingerprint file is keyed on the task name, not on the rendered
+  #      arguments — `tmpl one` and `tmpl two` both wrote tmpl-338898b2.json —
+  #      so all six drivers would share one record and each would invalidate
+  #      the others.
+  #
+  # It lives on each library's own `staticlib` task instead, where the source
+  # patterns are literal and there is one task per library. That is also the
+  # more honest home: the library knows what its own sources are, and since
+  # 2026-08-27 it owns the `generates:` too — its own dist/, not a path we
+  # hand it.
+  #
+  # WHAT THAT COSTS, said out loud: the freshness check no longer knows
+  # anything about lib/fs_<name>. Delete that directory and `staticlib` still
+  # answers "up to date". The copy below is UNCONDITIONAL for exactly that
+  # reason — it is a `cp` of an already-built tree, so running it every time
+  # is cheap, and it is what makes a deleted lib/fs_<name> heal itself.
+  vendor:
+    desc: 'Build one filesystem driver into lib/fs_<name>: chore vendor ext4'
+    args:
+      - name: fs
+        desc: ext4 | ntfs | squashfs | erofs | xfs | btrfs
+    deps: [_toolchain]
+    # THE LIBRARY DOES NOT WRITE HERE. It builds into its own dist/ and tells
+    # us where that is; we copy. Same contract as `probe` below, and the same
+    # TWO CALLS: `artifact` is a VALUE (PATTERNS.md: "a value — a flag string,
+    # a container status, a path" is a task called through {{.CHORE_EXE}}), and
+    # a value-returning task must return only the value. Giving it
+    # `deps: [staticlib]` puts chore's "task: staticlib is up to date" on
+    # stdout and the capture comes back unusable — measured on rust-blk-probe,
+    # not guessed. So the caller builds first, then asks.
+    #
+    # `artifact` PRINTS A DIRECTORY here, where rust-blk-probe's prints a file:
+    # a driver produces libfs_<name>.a AND include/*.h.
+    vars:
+      SRC: '../rust-fs-{{.fs}}'
+      OUT: '{{.ROOT_DIR}}/lib/fs_{{.fs}}'
+    cmds:
+      - '{{.CHORE_EXE}} -C {{.SRC}} staticlib'
+      - |
+        set -euo pipefail
+        src=$({{.CHORE_EXE}} -C {{.SRC}} artifact)
+        [ -d "$src" ] || { echo "vendor: artifact path is not a directory: $src" >&2; exit 1; }
+        mkdir -p "{{.OUT}}"
+        # THE CONTENTS, not the directory. `cp -R "$src/." "$dst/"` merges the
+        # archive and the include/ tree into lib/fs_<name>, where
+        # `cp -R "$src" "$dst"` would have made lib/fs_<name>/dist. It is
+        # unconditional even when the build was up to date, which is what
+        # makes a deleted lib/fs_<name> heal itself: freshness now lives on
+        # the library's own dist/, not on ours.
+        cp -R "$src/." "{{.OUT}}/"
+      # build-fs-<name>.sh emitted this and the move to `includes:` dropped it,
+      # so the About pane lost its rows for the six drivers without anything
+      # reporting it. Restored here rather than in the library, because "which
+      # commit did I link" is the consumer's question.
+      #
+      # Uppercase names, and no `args:` on _manifest: call vars on this path
+      # are pushed VERBATIM rather than case-folded the way command-line
+      # binding folds them (internal/run/run.go bindArgs). Measured on chore
+      # 0.6.0.
+      - task: _manifest
+        vars:
+          LIB: 'fs_{{.fs}}'
+          SRC: '{{.SRC}}'
+          OUT: '{{.OUT}}/VERSION.txt'
+
+  # The name guard stays HERE and not on `vendor`, because this one deletes a
+  # directory tree. An unknown name reaching `vendor` is caught by chore with
+  # "unknown task"; an unknown name reaching an `rm -rf` is not caught by
+  # anything.
+  vendor:clean:
+    desc: 'Remove one driver''s build output: chore vendor:clean ext4'
+    args:
+      - name: fs
+        desc: ext4 | ntfs | squashfs | erofs | xfs | btrfs
+    cmds:
+      - |
+        set -euo pipefail
+        case " {{.FS_DRIVERS}} " in
+          *" {{.fs}} "*) ;;
+          *) echo "unknown driver '{{.fs}}' — one of: {{.FS_DRIVERS}}" >&2; exit 2 ;;
+        esac
+        rm -rf "lib/fs_{{.fs}}"
+
+  # The one toolchain check, where there were four copies of a 25-line one.
+  # It asks only what is host-wide; the per-library `rustup target add` for
+  # the triple lives in the library, because the triple does.
+  _toolchain:
+    internal: true
+    desc: Fail early if the Rust toolchain is missing
+    cmds:
+      - |
+        set -eu
+        command -v cargo >/dev/null 2>&1 || {
+          echo "ERROR: cargo is not installed. Install from https://rustup.rs/" >&2
+          exit 1
+        }
+        command -v rustup >/dev/null 2>&1 || {
+          echo "ERROR: rustup is not installed (needed for cross-compilation)." >&2
+          exit 1
+        }
+
+  # ONE manifest writer, where build-img-containers.sh and build-gonetworkfs.sh
+  # each carried their own 50-line copy of `emit_version_manifest` — byte for
+  # byte the same function, in two files, with a comment in one of them saying
+  # it was "kept as a copy rather than sourced".
+  #
+  # WHAT READS THIS, so nobody deletes it as build clutter. A Run Script phase
+  # in DiskJockey.xcodeproj copies `lib/*/VERSION*.txt` into the app bundle
+  # under Resources/vendor-versions/, and
+  # DiskJockeyApplication/Models/VendoredLibraryInfo.swift parses it key=value
+  # for the About / Diagnostics pane. `lib` and `commit` are REQUIRED — its
+  # `parse` returns nil without either — and `ref_type` must be one of
+  # branch|tag|detached or it reads as `unknown`.
+  #
+  # This is the consumer's question ("what did I link"), not the library's,
+  # which is why it lives here and takes the source directory as an argument
+  # rather than being a task in each of eleven siblings.
+  #
+  # NO `args:` BLOCK, deliberately. It is only ever reached through `- task:`,
+  # and call vars are pushed VERBATIM rather than case-folded, so a declared
+  # `args: [lib, src, out]` would go looking for lowercase names the callers do
+  # not send. Uppercase on both sides, and the guard below names what is
+  # missing instead of letting the shell fail on an empty redirect.
+  _manifest:
+    internal: true
+    silent: true
+    desc: Write a key=value VERSION manifest describing SRC's git state to OUT
+    cmds:
+      - |
+        set -euo pipefail
+        lib="{{.LIB}}"; src="{{.SRC}}"; out="{{.OUT}}"
+        for n in lib src out; do
+          eval "v=\$$n"
+          [ -n "$v" ] || { echo "_manifest: $n was not set by the caller" >&2; exit 2; }
+        done
+        mkdir -p "$(dirname "$out")"
+
+        # A subshell, so the cd does not leak into whatever chore runs next in
+        # this script. `out` is absolute for the same reason.
+        (
+          cd "$src"
+          commit=$(git rev-parse HEAD 2>/dev/null || echo unknown)
+          short=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+
+          if tag=$(git describe --tags --exact-match 2>/dev/null); then
+            ref="$tag"; ref_type=tag
+          elif branch=$(git symbolic-ref --short -q HEAD 2>/dev/null); then
+            ref="$branch"; ref_type=branch
+          else
+            ref=HEAD; ref_type=detached
+          fi
+
+          # THE TWO FIELDS DISAGREE ON PURPOSE, and it is worth knowing which
+          # is which before reading a manifest. `git status --porcelain` lists
+          # UNTRACKED files too, so `dirty` here is the broader claim;
+          # `git describe --dirty` below sees tracked files only, which is the
+          # limitation VENDOR_PINS.txt documents for its own ref column.
+          # Measured 2026-08-27 on ../rust-img-vhd, whose only change was one
+          # untracked file: dirty=true, describe=v0.3.0-11-g9b807a1 with no
+          # -dirty suffix. Behaviour is unchanged from the two copies of
+          # emit_version_manifest this replaces — the comment is new.
+          if [ -z "$(git status --porcelain 2>/dev/null)" ]; then
+            dirty=false
+          else
+            dirty=true
+          fi
+
+          {
+            echo "lib=$lib"
+            echo "source=$(git config --get remote.origin.url 2>/dev/null || echo unknown)"
+            echo "ref=$ref"
+            echo "ref_type=$ref_type"
+            echo "commit=$commit"
+            echo "short_commit=$short"
+            echo "describe=$(git describe --always --long --dirty 2>/dev/null || echo "$short")"
+            echo "dirty=$dirty"
+            # ISO 8601 with a timezone, which is what Swift's
+            # ISO8601DateFormatter parses. It dates the COMMIT, not the build.
+            echo "commit_date=$(git log -1 --format=%cI 2>/dev/null || echo unknown)"
+          } > "$out"
+        )
+
+  vendor:all:
+    desc: Build everything the app links (alias for build's library half)
+    cmds:
+      - task: bundles
+      - task: gonetworkfs
+
+  # -------------------------------------------------------------------------
+  # Disk-image container readers
+  # -------------------------------------------------------------------------
+
+  # ONE task for every reader, the same shape `vendor` has for the filesystem
+  # drivers: WHICH reader, WHERE the artifact lands, WHETHER it is stale. The
+  # build is `{{.reader}}:staticlib` and lives in the library.
+  #
+  # No `--force` flag, and freshness is not declared here, for the two reasons
+  # written out above `vendor` — chore's own `--force` already does it, and a
+  # templated sources:/generates: on this task cannot work.
+  #
+  # WHAT WAS DROPPED WITH build-img-containers.sh, said out loud because it was
+  # a real fix and not dead weight in its day. Lines 149-184 of that script ran
+  # every `fs_core-*.o` in the archive through `llvm-objcopy --weaken-symbol`
+  # for eleven `_fs_core_*` C exports, so that linking lib/img_<n>/lib<n>.a
+  # ALONGSIDE lib/fs_<fs>/libfs_<fs>.a did not present ld-prime with two strong
+  # definitions of each. Both archives embed fs_core; ld64 has no
+  # --allow-multiple-definition.
+  #
+  # Nothing links these archives any more, which is why it is gone rather than
+  # ported. Measured 2026-08-27 on DiskJockey.xcodeproj/project.pbxproj:
+  #
+  #   grep -c 'img_' project.pbxproj                     0
+  #   LIBRARY_SEARCH_PATHS, every target      lib/bundle_<fs>, lib/go-networkfs
+  #
+  # The extensions link ONE aggregator staticlib per extension out of
+  # rust-bundles/dj-<fs>-bundle, which depends on the crates.io am-img-* and so
+  # links a single fs_core by construction. `lib/img_*` is now a local build
+  # for reference and for the diskprobe path.
+  #
+  # IF YOU LINK lib/img_* AND lib/fs_* INTO ONE BINARY AGAIN, you need the
+  # weakening back: `git show HEAD:scripts/build-img-containers.sh`. Do not
+  # reach for it otherwise — it rewrites the archive `staticlib` just produced,
+  # which invalidates that task's fingerprint and makes every later run rebuild.
+  img:one:
+    desc: 'Build one container reader into lib/img_<name>: chore img:one qcow2'
+    args:
+      - name: reader
+        desc: qcow2 | vhd | vhdx | vmdk
+    deps: [_toolchain]
+    # Two calls, and the library owns its output directory: see the note on
+    # `vendor` above, which this is a copy of with a different library name.
+    vars:
+      SRC: '../rust-img-{{.reader}}'
+      OUT: '{{.ROOT_DIR}}/lib/img_{{.reader}}'
+    cmds:
+      - '{{.CHORE_EXE}} -C {{.SRC}} staticlib'
+      - |
+        set -euo pipefail
+        src=$({{.CHORE_EXE}} -C {{.SRC}} artifact)
+        [ -d "$src" ] || { echo "img:one: artifact path is not a directory: $src" >&2; exit 1; }
+        mkdir -p "{{.OUT}}"
+        # THE CONTENTS, not the directory. `cp -R "$src/." "$dst/"` merges the
+        # archive and the include/ tree into lib/img_<name>, where
+        # `cp -R "$src" "$dst"` would have made lib/img_<name>/dist. It is
+        # unconditional even when the build was up to date, which is what
+        # makes a deleted lib/img_<name> heal itself: freshness now lives on
+        # the library's own dist/, not on ours.
+        cp -R "$src/." "{{.OUT}}/"
+      - task: _manifest
+        vars:
+          LIB: 'img_{{.reader}}'
+          SRC: '{{.SRC}}'
+          OUT: '{{.OUT}}/VERSION.txt'
+
+  img:
+    desc: Build all four disk-image container readers (qcow2/vhd/vhdx/vmdk)
+    cmds:
+      - task: img:one
+        vars: {reader: qcow2, READER: qcow2}
+      - task: img:one
+        vars: {reader: vhd, READER: vhd}
+      - task: img:one
+        vars: {reader: vhdx, READER: vhdx}
+      - task: img:one
+        vars: {reader: vmdk, READER: vmdk}
+
+  img:clean:
+    desc: Remove the disk-image container readers' build output
+    cmds:
+      - |
+        set -euo pipefail
+        for r in {{.IMG_READERS}}; do rm -rf "lib/img_$r"; done
+
+  # -------------------------------------------------------------------------
+  # diskprobe — the partition-probe CLI the app shells out to
+  # -------------------------------------------------------------------------
+
+  # NOT LINKED, STAGED, and that is the whole reason this task looks unlike
+  # every other Rust one here. `vendor`, `img` and `bundles` leave archives
+  # for ld-prime; this leaves an EXECUTABLE under lib/diskprobe/ that
+  # FSKitMountService, AgentImpl and SwiftPartitionProbe launch as a child
+  # process and parse JSON out of. Nothing links it, so nothing about it
+  # appears in LIBRARY_SEARCH_PATHS and a missing one fails at RUNTIME —
+  # "diskprobe binary not found" — with a perfectly green build behind it.
+  #
+  # No sources:/generates: here. The library's `binary` task owns freshness,
+  # the same division as `img:one`.
+  probe:
+    desc: Stage the diskprobe CLI from rust-blk-probe into lib/diskprobe
+    # THE LIBRARY DOES NOT WRITE HERE. It builds into its own dist/ and tells
+    # us where that is; we copy. So rust-blk-probe has no knowledge of this
+    # project, can change its output layout freely, and is usable with no
+    # consumer at all.
+    #
+    # Two calls on purpose. `artifact` is a VALUE (PATTERNS.md: "a value — a
+    # flag string, a container status, a path" is a task called through
+    # {{.CHORE_EXE}}), and a value-returning task must return only the value.
+    # Giving it `deps: [binary]` put chore's "task: binary is up to date" on
+    # stdout and the capture came back unusable — measured, not guessed.
+    vars:
+      SRC: '../rust-blk-probe'
+      OUT: '{{.ROOT_DIR}}/lib/diskprobe'
+    cmds:
+      - '{{.CHORE_EXE}} -C {{.SRC}} binary'
+      - |
+        set -euo pipefail
+        src=$({{.CHORE_EXE}} -C {{.SRC}} artifact)
+        [ -x "$src" ] || { echo "probe: artifact path is not executable: $src" >&2; exit 1; }
+        mkdir -p "{{.OUT}}"
+        cp "$src" "{{.OUT}}/diskprobe"
+        lipo -info "{{.OUT}}/diskprobe"
+      - task: _manifest
+        vars: { LIB: 'diskprobe', SRC: '{{.SRC}}', OUT: '{{.OUT}}/VERSION.txt' }
+
+  probe:clean:
+    desc: Remove the diskprobe build output
+    cmds:
+      - 'rm -rf "{{.PROBE_OUT}}"'
+
+  # -------------------------------------------------------------------------
+  # Per-extension aggregator bundles
+  # -------------------------------------------------------------------------
+
+  bundles:
+    desc: Build the per-extension aggregator staticlibs (what the app links)
+    cmds:
+      - ./scripts/build-bundles.sh
+
+  bundles:clean:
+    desc: Remove the aggregator staticlibs
+    cmds:
+      - |
+        set -euo pipefail
+        for b in {{.BUNDLES}}; do rm -rf "lib/bundle_$b"; done
+
+  # -------------------------------------------------------------------------
+  # go-networkfs
+  # -------------------------------------------------------------------------
+
+  # WHAT MOVED OUT OF HERE. The driver list used to live in three places —
+  # this file's NETWORKFS_DRIVERS, go-networkfs's own Makefile (ARCHIVES) and
+  # the default in build-gonetworkfs.sh — three lists that had to agree with
+  # nothing watching them. It is now go-networkfs's, once, and the library's
+  # `archives` task fails if a driver in it produced no archive.
+  #
+  # So did GOOS, CGO_ENABLED, GOWORK, the ldflags and the DJ_GO_DEBUG switch,
+  # which is now `--debug`. What is left here is the consumer's half: where the
+  # artifact lands, and which extra driver to add for a one-off.
+  #
+  # No `--force` flag; chore's own `--force` skips the up-to-date check, and
+  # the stamp files it used to delete no longer exist.
+  gonetworkfs:
+    desc: 'Build the network filesystem drivers into lib/go-networkfs [--extra name]'
+    args:
+      - name: extra
+        desc: build this driver in addition to the library's default set
+    # Two calls, and the library owns its output directory: see the note on
+    # `vendor` above. The library's `artifact` prints ../go-networkfs/dist,
+    # which holds EIGHTEEN files — nine c-archives and the header `go build
+    # -buildmode=c-archive` generates beside each — so a directory is the only
+    # thing it could print.
+    vars:
+      extra: ""
+      SRC: '../go-networkfs'
+      OUT: '{{.ROOT_DIR}}/{{.NETWORKFS_OUT}}'
+    cmds:
+      # A COMMAND LINE, not `- task:`, so `--extra` case-folds: command-line
+      # binding sets both `extra` and `EXTRA` (internal/cli/cli.go setParam,
+      # internal/run/run.go bindArgs), which is why the callee's `{{if .extra}}`
+      # sees it. The `- task:` form pushed call vars verbatim and had to send
+      # both spellings by hand.
+      - '{{.CHORE_EXE}} -C {{.SRC}} archives{{if .extra}} --extra "{{.extra}}"{{end}}'
+      - |
+        set -euo pipefail
+        src=$({{.CHORE_EXE}} -C {{.SRC}} artifact)
+        [ -d "$src" ] || { echo "gonetworkfs: artifact path is not a directory: $src" >&2; exit 1; }
+        mkdir -p "{{.OUT}}"
+        # THE CONTENTS, not the directory. `cp -R "$src/." "$dst/"` merges the
+        # archive and the include/ tree into lib/go-networkfs, where
+        # `cp -R "$src" "$dst"` would have made lib/go-networkfs/dist. It is
+        # unconditional even when the build was up to date, which is what
+        # makes a deleted lib/go-networkfs heal itself: freshness now lives on
+        # the library's own dist/, not on ours.
+        cp -R "$src/." "{{.OUT}}/"
+      - task: _manifest
+        vars:
+          LIB: go-networkfs
+          SRC: '{{.SRC}}'
+          # This filename, not VERSION.txt: NETWORKFS_OUT holds nine archives
+          # from one repository, and the Xcode phase that copies these prefixes
+          # by PARENT DIRECTORY, so every lib/*/VERSION.txt already collides
+          # only across directories. Kept as-is because the About pane has been
+          # reading this exact name.
+          OUT: '{{.OUT}}/VERSION-go-networkfs.txt'
+
+  gonetworkfs:clean:
+    desc: Remove the network filesystem drivers' build output
+    cmds:
+      - rm -rf {{.NETWORKFS_OUT}}
+
+  # -------------------------------------------------------------------------
+  # Local co-development of vendored drivers
+  # -------------------------------------------------------------------------
+  #
+  # Distribution builds resolve every driver bundle from crates.io — the
+  # published, proven versions. To hack on a vendored crate's source and test
+  # it in the app without publishing a version each time, switch a bundle to
+  # local-dev mode, then restore the crates.io-clean state before committing.
+  #
+  # A dev-linked bundle is NOT distribution-clean. Do not commit one.
+
+  dev:link:
+    desc: 'Point a bundle at local source: chore dev:link ext4 [--extra am-img-qcow2]'
+    args:
+      - name: fs
+        desc: ext4 | ntfs | erofs | squashfs | xfs | btrfs
+      - name: extra
+        desc: also redirect another crate, e.g. am-img-qcow2
+    vars:
+      extra: ""
+    cmds:
+      - ./scripts/dev-link.sh {{.fs}} {{.extra}}
+
+  dev:unlink:
+    desc: 'Restore a bundle to crates.io-clean: chore dev:unlink ext4'
+    args:
+      - name: fs
+        desc: ext4 | ntfs | erofs | squashfs | xfs | btrfs
+    cmds:
+      - ./scripts/dev-unlink.sh {{.fs}}
+
+  # -------------------------------------------------------------------------
+  # App
+  # -------------------------------------------------------------------------
+
+  agent:install:
+    desc: Install the DiskJockeyAgent LaunchAgent from the DerivedData build (dev only)
+    cmds:
+      - ./scripts/install-agent-dev.sh
+
+  installable:
+    desc: 'Build a Release-signed DiskJockey.app into build/export [--install]'
+    args:
+      - name: install
+        type: bool
+        desc: also copy the result into /Applications
+    cmds:
+      - ./scripts/build-installable.sh {{if .install}}--install{{end}}
+
+  # -------------------------------------------------------------------------
+  # Vendor-pin manifest
+  # -------------------------------------------------------------------------
+  #
+  # Submodule pins live as opaque 160000 gitlink entries in the superproject
+  # tree — invisible in any plain-text file. This materialises them into a
+  # committed file so the tag and SHA for every vendored submodule is visible
+  # from GitHub's file view and from a plain `cat`.
+
+  # ONE GENERATOR, TWO CALLERS. `pins` writes the committed manifest;
+  # `pins:check` writes a throwaway copy and compares. Nothing else in this
+  # repository knows how a pin is derived — scripts/check-vendor-pins.sh had a
+  # second implementation of it, read submodule gitlinks the sibling move had
+  # already left behind, and disagreed silently. Two lists that must agree,
+  # with nothing watching, is the defect this repo has paid for before; there
+  # is now one implementation and everything else forwards to it.
+  pins:_generate:
+    internal: true
+    silent: true
+    desc: Write the pin manifest to {{.OUT}}
+    cmds:
+      - |
+        set -euo pipefail
+
+        # A call var that does not arrive leaves this empty, and `> ""` is a
+        # confusing shell error rather than a named one. See the note on
+        # `vendor` above: command-line binding upper-cases, call vars do not.
+        out="{{.OUT}}"
+        [ -n "$out" ] || { echo "pins:_generate: OUT was not set by the caller" >&2; exit 2; }
+        mkdir -p "$(dirname "$out")"
+
+        {
+          echo "# Auto-generated by 'chore pins'. Do not edit by hand."
+          echo "# Regenerate after every dependency bump + commit alongside it."
+          echo "#"
+          echo "# 'ref' is git describe --tags --always --dirty. The -dirty suffix"
+          echo "# means TRACKED files are modified; git describe cannot see untracked"
+          echo "# ones, so a clean ref is not a promise that nothing is new there."
+          echo ""
+          printf "%-24s %-42s %s\n" "library" "sha" "ref"
+          printf "%-24s %-42s %s\n" "-------" "---" "---"
+          for lib in {{.PIN_LIBS}}; do
+            # A sibling checkout is the source of truth. A dirty one is a real
+            # state and is reported as such — a submodule gitlink could only
+            # ever name a commit, so this says strictly more than it used to.
+            if git -C "../$lib" rev-parse HEAD >/dev/null 2>&1; then
+              sha=$(git -C "../$lib" rev-parse HEAD)
+              ref=$(git -C "../$lib" describe --tags --always --dirty 2>/dev/null || echo "(no ref)")
+              printf "%-24s %-42s %s\n" "$lib" "$sha" "$ref"
+              continue
+            fi
+
+            # Fallback while both layouts exist. The submodules are still in
+            # .gitmodules and are NOT being removed here, so anything without a
+            # sibling (tabler-icons) keeps its pin rather than disappearing.
+            line=$(git submodule status "vendor/$lib" 2>/dev/null || true)
+            if [ -n "$line" ]; then
+              printf '%s\n' "$line" | awk -v lib="$lib" '{
+                sha=$1; sub(/^[- +]/, "", sha);
+                ref=($3 ? $3 " (submodule)" : "(submodule, no ref)");
+                printf "%-24s %-42s %s\n", lib, sha, ref
+              }'
+              continue
+            fi
+
+            # Neither layout can answer for this library HERE. The row says so
+            # rather than being dropped: a missing row would be covered by its
+            # neighbours and read as "we do not depend on that", where an
+            # (absent) row reads as "this checkout cannot tell you".
+            printf "%-24s %-42s %s\n" "$lib" "(absent)" "(no sibling, no submodule)"
+          done
+        } > "$out"
+
+  pins:
+    silent: true
+    desc: Regenerate VENDOR_PINS.txt from the sibling checkouts
+    cmds:
+      - task: pins:_generate
+        vars:
+          OUT: '{{.ROOT_DIR}}/{{.VENDOR_PINS_FILE}}'
+      - |
+        echo
+        echo "Wrote {{.VENDOR_PINS_FILE}}:"
+        cat "{{.ROOT_DIR}}/{{.VENDOR_PINS_FILE}}"
+
+  # Read-only: it writes its expectation under .chore/ (gitignored) and never
+  # touches the committed manifest. A task called "check" that rewrites the
+  # file it is checking leaves you unable to see what was wrong.
+  pins:check:
+    silent: true
+    desc: Fail if VENDOR_PINS.txt does not match the checkouts here
+    cmds:
+      - task: pins:_generate
+        vars:
+          OUT: '{{.ROOT_DIR}}/.chore/VENDOR_PINS.expected'
+      - |
+        set -euo pipefail
+        actual="{{.ROOT_DIR}}/{{.VENDOR_PINS_FILE}}"
+        expect="{{.ROOT_DIR}}/.chore/VENDOR_PINS.expected"
+
+        if [ ! -f "$actual" ]; then
+          echo "ERROR: {{.VENDOR_PINS_FILE}} is missing — run 'chore pins'." >&2
+          exit 1
+        fi
+
+        # A `-dirty` suffix describes the WORKING TREE at the instant the
+        # manifest was written, not the pin. The same commit reads
+        # v0.4.0-15-ge3e0d16-dirty while a file is open in an editor and
+        # v0.4.0-15-ge3e0d16 once it is saved — so comparing it raw fails on a
+        # pin that has not moved, which is a false alarm, and a check that
+        # false-alarms is a check people learn to skip. The sha column is the
+        # pin and is compared exactly; `-dirty` is normalised off both sides.
+        # A real edit that gets COMMITTED moves the sha, and that still fails.
+        sed -E 's/-dirty[[:space:]]*$//' "$actual" > "$expect.actual.norm"
+        sed -E 's/-dirty[[:space:]]*$//' "$expect" > "$expect.norm"
+
+        if cmp -s "$expect.norm" "$expect.actual.norm"; then
+          if cmp -s "$expect" "$actual"; then
+            echo "{{.VENDOR_PINS_FILE}} is up to date."
+          else
+            echo "{{.VENDOR_PINS_FILE}} is up to date (only -dirty suffixes differ; every pinned commit matches)."
+          fi
+          exit 0
+        fi
+
+        echo "ERROR: {{.VENDOR_PINS_FILE}} does not match the checkouts here." >&2
+        echo "       Run 'chore pins' and commit the result." >&2
+        echo "" >&2
+        diff -u "$expect.actual.norm" "$expect.norm" >&2 || true
+        exit 1
+
+  # -------------------------------------------------------------------------
+  # Cleaning
+  # -------------------------------------------------------------------------
+
+  clean:
+    desc: Remove the build output the app links, and the generated protobuf
+    cmds:
+      - task: bundles:clean
+      - task: img:clean
+      - task: probe:clean
+      - task: gonetworkfs:clean
+      - |
+        set -euo pipefail
+        for fs in {{.FS_DRIVERS}}; do rm -rf "lib/fs_$fs"; done
+        printf '\nCleaning up...\n\n'
+        rm -f ./{{.DISKJOCKEY_LIB}}/Protobuf/{{.FILEPROVIDER_PROTOCOL}}.pb.swift
+
+  clean:all:
+    desc: Everything clean removes, and nothing else is left behind
+    cmds:
+      - task: clean
+
+  sweep:
+    desc: Reap cargo artifacts untouched for 7+ days (DISKJOCKEY_SWEEP_DAYS to change)
+    # Detached: a sweep over vendor/ is not instant and must not block the
+    # caller. The script locks with mkdir (macOS has no flock) and refuses to
+    # run while a cargo build is live under this root, so overlapping
+    # invocations are safe.
+    cmds:
+      - 'nohup ./scripts/sweep-target.sh >/dev/null 2>&1 &'
+    silent: true
