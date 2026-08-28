@@ -117,10 +117,52 @@ final class DJAgentClient {
         }
     }
 
+    /// What the agent must prove before this app will talk to it.
+    ///
+    /// The agent checks US — `DiskJockeyAgent/main.swift` pins a
+    /// requirement on every incoming connection — and until now nothing
+    /// checked IT. Authentication in one direction is not
+    /// authentication: the mach name
+    /// `com.antimatterstudios.diskjockey.agent` is registered from
+    /// `~/Library/LaunchAgents`, which the user can write to without
+    /// authorisation, so any process running as the user could claim
+    /// the name and receive `attachImage(atPath:)`,
+    /// `detachDevice(_:)` and `mountFSKit(...)` from a sandboxed app
+    /// that believed it was talking to its own helper.
+    ///
+    /// `anchor apple generic` is the half that does the work: it
+    /// requires an Apple-issued certificate chain, which a locally
+    /// produced binary cannot forge. The team check then narrows that
+    /// to our own signing identity.
+    ///
+    /// The agent's code-signing IDENTIFIER is deliberately not pinned.
+    /// It is not a committed Xcode target — it is built by
+    /// `scripts/install-agent-dev.sh` from DerivedData — so its
+    /// identifier is not fixed anywhere this code can read, and pinning
+    /// a guess would fail closed: the connection would be invalidated
+    /// with no error at the call site, which is worse than the gap
+    /// being fixed. Tighten this the day the agent becomes a real
+    /// target.
+    ///
+    /// The team ID is also spelled in `DiskJockeyAgent/main.swift` as
+    /// `kTeamID`. Two copies, because the agent is not an Xcode target
+    /// and shares no compilation unit with the app — if one is ever
+    /// changed without the other, the app and its helper stop being
+    /// able to talk and neither says why. Change both.
+    private static let teamID = "43UMKXZ8P4"
+
+    private static var agentRequirement: String {
+        "anchor apple generic and certificate leaf[subject.OU] = \"\(teamID)\""
+    }
+
     private func makeProxy() throws -> DJAgentProtocol {
         if connection == nil {
             let conn = NSXPCConnection(machServiceName: "com.antimatterstudios.diskjockey.agent",
                                        options: [])
+            // Before anything is sent, and before the interface is set:
+            // a connection that cannot prove who it is should never
+            // carry a message.
+            conn.setCodeSigningRequirement(Self.agentRequirement)
             conn.remoteObjectInterface = NSXPCInterface(with: DJAgentProtocol.self)
             conn.invalidationHandler = { [weak self] in
                 Task { @MainActor in self?.connection = nil }
