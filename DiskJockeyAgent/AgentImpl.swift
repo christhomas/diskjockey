@@ -7,8 +7,42 @@ import Foundation
 extension String: @retroactive Error {}
 
 final class AgentImpl: NSObject, DJAgentProtocol {
-    func attachImage(atPath path: String,
+    /// Whether a path is one this agent will attach.
+    ///
+    /// `attachImage` attached ANY caller-supplied path — no
+    /// canonicalisation, no symlink check, no existence check. That is a
+    /// sandbox-escape primitive dressed as a convenience: a sandboxed
+    /// caller cannot open a file outside its container, but it could ask
+    /// this unsandboxed agent to attach one.
+    ///
+    /// The connection is now mutually authenticated, so the caller is at
+    /// least our own app — but an app is a large thing to trust
+    /// wholesale, and a bug in it should not become a whole-disk read.
+    /// So: resolve symlinks first, then require a regular file that
+    /// exists. Resolving BEFORE checking is the order that matters; a
+    /// symlink checked and then followed is the classic race.
+    static func attachableImage(_ path: String) -> Result<String, String> {
+        let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolved,
+                                             isDirectory: &isDirectory) else {
+            return .failure("no such file: \(path)")
+        }
+        guard !isDirectory.boolValue else {
+            return .failure("not a disk image: \(path) is a directory")
+        }
+        return .success(resolved)
+    }
+
+    func attachImage(atPath incoming: String,
                      reply: @escaping ([String]?, String?) -> Void) {
+        let path: String
+        switch Self.attachableImage(incoming) {
+        case .success(let resolved): path = resolved
+        case .failure(let why):
+            reply(nil, why)
+            return
+        }
         switch Self.hdiutilAttach(path: path) {
         case .success(let slices):
             reply(slices, nil)
@@ -107,8 +141,26 @@ final class AgentImpl: NSObject, DJAgentProtocol {
         proc.waitUntilExit()
     }
 
+    /// A BSD disk name, and nothing else.
+    ///
+    /// `detachDevice` hands its argument to `hdiutil detach`. The
+    /// INTERNAL caller at the top of this file already checks the shape;
+    /// this XPC entry point did not, so a peer could name any device —
+    /// including volumes this agent never attached — and have them
+    /// forced offline.
+    ///
+    /// Anchored at both ends deliberately: an unanchored match would
+    /// accept `/dev/disk1 ; anything`.
+    static func isBSDDiskName(_ name: String) -> Bool {
+        name.range(of: #"^/dev/disk\d+(s\d+)?$"#, options: .regularExpression) != nil
+    }
+
     func detachDevice(_ bsdName: String,
                       reply: @escaping (Bool, String?) -> Void) {
+        guard Self.isBSDDiskName(bsdName) else {
+            reply(false, "refusing to detach \(bsdName): not a BSD disk name")
+            return
+        }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
         proc.arguments = ["detach", bsdName]
