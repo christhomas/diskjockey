@@ -152,6 +152,61 @@ public extension FileSystemItem where Tag == SquashfsTag {
     }
 }
 
+// MARK: - XFS specialisation
+
+/// Phantom tag selecting `UInt64` identity for XFS inode numbers.
+///
+/// XFS inode numbers are 64-bit and encode the allocation group in
+/// their high bits, so the width is not a matter of headroom — a
+/// 32-bit truncation would silently move an inode to a different AG.
+public enum XfsTag: FileSystemTag {
+    public typealias ID = UInt64
+}
+
+/// Per-FS item type for the XFS extension.
+public typealias XfsItem = FileSystemItem<XfsTag>
+
+public extension FileSystemItem where Tag == XfsTag {
+    /// XFS inode number — friendly spelling for `id`.
+    var inode: UInt64 { id }
+
+    /// Parent directory's inode — friendly spelling for `parentID`.
+    var parentInode: UInt64? { parentID }
+
+    convenience init(inode: UInt64, path: String, parentInode: UInt64?) {
+        self.init(id: inode, path: path, parentID: parentInode)
+    }
+}
+
+// MARK: - Btrfs specialisation
+
+/// Phantom tag selecting `UInt64` identity for Btrfs inode numbers.
+///
+/// Btrfs objectids are 64-bit, and an inode number is only unique
+/// WITHIN a subvolume — two subvolumes of one filesystem both have an
+/// inode 256. The tag does not encode that, so anything resolving an
+/// item across subvolumes has to carry the subvolume separately; the
+/// tag's job is only to stop a btrfs id being handed to another
+/// filesystem's code path.
+public enum BtrfsTag: FileSystemTag {
+    public typealias ID = UInt64
+}
+
+/// Per-FS item type for the Btrfs extension.
+public typealias BtrfsItem = FileSystemItem<BtrfsTag>
+
+public extension FileSystemItem where Tag == BtrfsTag {
+    /// Btrfs inode number — friendly spelling for `id`.
+    var inode: UInt64 { id }
+
+    /// Parent directory's inode — friendly spelling for `parentID`.
+    var parentInode: UInt64? { parentID }
+
+    convenience init(inode: UInt64, path: String, parentInode: UInt64?) {
+        self.init(id: inode, path: path, parentID: parentInode)
+    }
+}
+
 // MARK: - EROFS specialisation
 
 /// Phantom tag selecting `UInt64` identity for EROFS inode numbers
