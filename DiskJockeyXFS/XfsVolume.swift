@@ -1,11 +1,12 @@
 /*
  * XfsVolume.swift — FSKit volume for XFS (read-only).
  *
- * Mirror of DiskJockeySQUASHFS's volume. Implements FSVolume.Operations +
- * FSVolume.ReadWriteOperations + FSVolume.PathConfOperations. XFS is
- * read-only, so every mutating op returns XFS; reads/lookups/enumeration
- * dispatch to the fs_xfs_* C ABI. XFS NIDs are 64-bit, so item identity
- * is UInt64 (ErofsItem / ErofsTag).
+ * Implements FSVolume.Operations + FSVolume.ReadWriteOperations +
+ * FSVolume.PathConfOperations. This extension is read-only, so every
+ * mutating op returns EROFS — the errno for a read-only filesystem, not
+ * the filesystem of that name; reads/lookups/enumeration dispatch to the
+ * fs_xfs_* C ABI. XFS inode numbers are 64-bit, so item identity is
+ * UInt64 (XfsItem / XfsTag).
  *
  * MIT License — see LICENSE
  */
@@ -25,7 +26,7 @@ final class XfsVolume: FSVolume,
     private var contextPtr: UnsafeMutableRawPointer?
     private let bsdName: String
     private let stats: IOStatsCollector
-    private let items = FileIDCache<ErofsItem>()
+    private let items = FileIDCache<XfsItem>()
 
     init(volumeID: FSVolume.Identifier,
          volumeName: FSFileName,
@@ -45,11 +46,11 @@ final class XfsVolume: FSVolume,
     // MARK: - Item cache
 
     private func item(forInode inode: UInt64, path: String,
-                      parentInode: UInt64?) -> ErofsItem {
+                      parentInode: UInt64?) -> XfsItem {
         items.getOrCreate(
             id: inode,
             validate: { $0.path == path && $0.parentInode == parentInode },
-            create: { ErofsItem(inode: inode, path: path, parentInode: parentInode) }
+            create: { XfsItem(inode: inode, path: path, parentInode: parentInode) }
         )
     }
 
@@ -60,11 +61,18 @@ final class XfsVolume: FSVolume,
         caps.supportsPersistentObjectIDs = true
         caps.supportsSymbolicLinks = true
         caps.supportsHardLinks = false
-        caps.supportsJournal = false
+        // XFS is a journalling filesystem — this said `false`,
+        // inherited from the EROFS volume this file was copied from,
+        // and EROFS genuinely has no journal.
+        //
+        // `supportsJournal` describes the FORMAT; `supportsActiveJournal`
+        // describes this mount. The driver refuses a dirty log rather
+        // than replaying one, so the log is never active from here.
+        caps.supportsJournal = true
         caps.supportsActiveJournal = false
         caps.supportsSparseFiles = true
         caps.supports2TBFiles = true
-        // XFS NIDs are 64-bit.
+        // XFS inode numbers are 64-bit.
         caps.supports64BitObjectIDs = true
         // XFS (Linux) is case-sensitive.
         caps.caseFormat = .sensitive
@@ -128,7 +136,7 @@ final class XfsVolume: FSVolume,
         _ desiredAttributes: FSItem.GetAttributesRequest,
         of item: FSItem
     ) async throws -> FSItem.Attributes {
-        guard let fs = bridgeFS, let eItem = item as? ErofsItem else {
+        guard let fs = bridgeFS, let eItem = item as? XfsItem else {
             throw POSIXError(.EBADF)
         }
         var attr = fs_xfs_attr_t()
@@ -151,7 +159,7 @@ final class XfsVolume: FSVolume,
         named name: FSFileName,
         inDirectory directory: FSItem
     ) async throws -> (FSItem, FSFileName) {
-        guard let fs = bridgeFS, let dirItem = directory as? ErofsItem else {
+        guard let fs = bridgeFS, let dirItem = directory as? XfsItem else {
             throw POSIXError(.EBADF)
         }
         guard let nameStr = name.string else { throw POSIXError(.EINVAL) }
@@ -172,7 +180,7 @@ final class XfsVolume: FSVolume,
         attributes: FSItem.GetAttributesRequest?,
         packer: FSDirectoryEntryPacker
     ) async throws -> FSDirectoryVerifier {
-        guard let fs = bridgeFS, let dirItem = directory as? ErofsItem else {
+        guard let fs = bridgeFS, let dirItem = directory as? XfsItem else {
             throw POSIXError(.EBADF)
         }
         guard let iter = fs_xfs_dir_open(fs, dirItem.path) else {
@@ -217,7 +225,7 @@ final class XfsVolume: FSVolume,
     }
 
     func reclaimItem(_ item: FSItem) async throws {
-        if let eItem = item as? ErofsItem {
+        if let eItem = item as? XfsItem {
             items.remove(id: eItem.inode)
         }
     }
@@ -225,7 +233,7 @@ final class XfsVolume: FSVolume,
     // MARK: - Symlink
 
     func readSymbolicLink(_ item: FSItem) async throws -> FSFileName {
-        guard let fs = bridgeFS, let eItem = item as? ErofsItem else {
+        guard let fs = bridgeFS, let eItem = item as? XfsItem else {
             throw POSIXError(.EBADF)
         }
         var buf = [CChar](repeating: 0, count: 4096)
@@ -295,7 +303,7 @@ final class XfsVolume: FSVolume,
         from item: FSItem, at offset: off_t, length: Int,
         into buffer: FSMutableFileDataBuffer
     ) throws -> Int {
-        guard let fs = bridgeFS, let eItem = item as? ErofsItem else {
+        guard let fs = bridgeFS, let eItem = item as? XfsItem else {
             throw POSIXError(.EBADF)
         }
         return buffer.withUnsafeMutableBytes { rawBuf in

@@ -123,4 +123,78 @@ final class FileSystemItemTests: XCTestCase {
         // refactor that collapses them shows up here too.
         XCTAssertFalse(type(of: ext) == type(of: ntfs))
     }
+
+    // MARK: - The tags that had no tests
+    //
+    // SquashFS, EROFS, XFS and Btrfs were all added as a typealias plus
+    // an extension, and none of the four was covered here. That is how a
+    // botched rename survived: XfsVolume and BtrfsVolume were copies of
+    // ErofsVolume that still declared `FileIDCache<ErofsItem>`, so the
+    // phantom tag — whose entire job is to make a cross-filesystem
+    // mix-up a compile error — was silently pointing at the wrong
+    // filesystem in two of the six extensions, and nothing said so.
+    //
+    // These pin the same two properties the ext4 and NTFS cases pin: the
+    // friendly accessors read back what the generic ones do, and the ID
+    // width is the one the tag chose.
+
+    func testSquashfsSpecialisationRoundTrips() {
+        let item = SquashfsItem(inode: 11, path: "/sq", parentInode: 1)
+        XCTAssertEqual(item.inode, 11)
+        XCTAssertEqual(item.parentInode, 1)
+        XCTAssertEqual(item.id, item.inode)
+        XCTAssertEqual(item.parentID, item.parentInode)
+    }
+
+    func testErofsSpecialisationRoundTrips() {
+        let item = ErofsItem(inode: 22, path: "/er", parentInode: 2)
+        XCTAssertEqual(item.inode, 22)
+        XCTAssertEqual(item.parentInode, 2)
+        XCTAssertEqual(item.id, item.inode)
+        XCTAssertEqual(item.parentID, item.parentInode)
+    }
+
+    func testXfsSpecialisationRoundTrips() {
+        let item = XfsItem(inode: 33, path: "/xfs", parentInode: 3)
+        XCTAssertEqual(item.inode, 33)
+        XCTAssertEqual(item.parentInode, 3)
+        XCTAssertEqual(item.id, item.inode)
+        XCTAssertEqual(item.parentID, item.parentInode)
+    }
+
+    func testBtrfsSpecialisationRoundTrips() {
+        let item = BtrfsItem(inode: 44, path: "/btrfs", parentInode: 4)
+        XCTAssertEqual(item.inode, 44)
+        XCTAssertEqual(item.parentInode, 4)
+        XCTAssertEqual(item.id, item.inode)
+        XCTAssertEqual(item.parentID, item.parentInode)
+    }
+
+    /// Every tag's ID width, together.
+    ///
+    /// Written as one test over all six rather than one per filesystem
+    /// so that adding a seventh and forgetting it is visible here as an
+    /// absence rather than passing by default.
+    func testEachTagUsesTheIdentityWidthItsFilesystemNeeds() {
+        XCTAssertTrue(EXT4Tag.ID.self == UInt32.self, "ext4 inodes are 32-bit")
+        XCTAssertTrue(SquashfsTag.ID.self == UInt32.self, "SquashFS inodes are 32-bit")
+        XCTAssertTrue(NTFSTag.ID.self == UInt64.self, "MFT record numbers are 64-bit")
+        XCTAssertTrue(ErofsTag.ID.self == UInt64.self, "EROFS NIDs are 64-bit")
+        XCTAssertTrue(XfsTag.ID.self == UInt64.self, "XFS inode numbers are 64-bit")
+        XCTAssertTrue(BtrfsTag.ID.self == UInt64.self, "Btrfs objectids are 64-bit")
+    }
+
+    /// The tags really are distinct types.
+    ///
+    /// The compiler enforces this and a runtime test cannot reach a
+    /// mix-up — but it CAN check the premise the enforcement rests on,
+    /// which is that no two tags are the same type. Two filesystems
+    /// sharing a tag would compile, and would silently accept each
+    /// other's items. That is close to what the copied volumes did.
+    func testNoTwoFilesystemsShareATag() {
+        XCTAssertFalse(XfsTag.self == ErofsTag.self, "XFS and EROFS share a tag")
+        XCTAssertFalse(BtrfsTag.self == ErofsTag.self, "Btrfs and EROFS share a tag")
+        XCTAssertFalse(XfsTag.self == BtrfsTag.self, "XFS and Btrfs share a tag")
+        XCTAssertFalse(SquashfsTag.self == EXT4Tag.self, "SquashFS and ext4 share a tag")
+    }
 }
