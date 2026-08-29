@@ -128,12 +128,22 @@ fi
 # Not on main: build the pinned ref in a worktree, so the branch someone
 # happens to be working on cannot reach the app's binary.
 #
-# The ref must exist locally. Fetching here would make the build depend on
-# the network and on whatever upstream currently says, which is the opposite
-# of a pin.
-if ! ( cd "$SRC" && git rev-parse -q --verify "refs/tags/$TAG" >/dev/null ); then
-    printf "%bERROR: %s has no tag %s%b\n" "$RED" "$NAME" "$TAG" "$NC" >&2
-    printf "  fetch it:  git -C %s fetch --tags\n" "$SRC" >&2
+# A tag is the intent, but the pin may still name a branch: no tag in the
+# family yet contains its crate's chores.yml, which is the build contract, so
+# `main` is the stopgap SIBLING_PINS.txt documents. Resolve either, tag first
+# so a branch that shares a name with a tag cannot shadow it.
+REF=""
+for candidate in "refs/tags/$TAG" "refs/remotes/origin/$TAG" "refs/heads/$TAG"; do
+    if ( cd "$SRC" && git rev-parse -q --verify "$candidate" >/dev/null ); then
+        REF="$candidate"; break
+    fi
+done
+
+# Not fetched here. Fetching would make the build depend on the network and on
+# whatever upstream currently says, which is the opposite of a pin.
+if [ -z "$REF" ]; then
+    printf "%bERROR: %s has no tag or branch %s%b\n" "$RED" "$NAME" "$TAG" "$NC" >&2
+    printf "  fetch it:  git -C %s fetch --all --tags\n" "$SRC" >&2
     printf "  or repin:  edit SIBLING_PINS.txt\n" >&2
     exit 1
 fi
@@ -175,7 +185,7 @@ echo "  worktree: $WT"
 
 # Detached: a worktree that claimed a branch name would collide with the
 # developer's own checkout of it.
-( cd "$SRC" && git worktree add --detach "$WT" "refs/tags/$TAG" ) >/dev/null \
+( cd "$SRC" && git worktree add --detach "$WT" "$REF" ) >/dev/null \
     || die "could not create a worktree of $TAG"
 
 if [ -f "$WT/.gitmodules" ]; then
@@ -205,7 +215,7 @@ cp -R "$DIST"/. "$OUT/"
     echo "lib=$NAME"
     echo "source=$( cd "$SRC" && git config --get remote.origin.url 2>/dev/null || echo unknown )"
     echo "ref=$TAG"
-    echo "ref_type=tag"
+    case "$REF" in refs/tags/*) echo "ref_type=tag" ;; *) echo "ref_type=branch" ;; esac
     echo "commit=$( cd "$WT" && git rev-parse HEAD )"
     echo "short_commit=$( cd "$WT" && git rev-parse --short HEAD )"
     echo "built_from=worktree"
