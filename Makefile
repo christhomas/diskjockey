@@ -29,7 +29,7 @@ EROFS_OUT := lib/fs_erofs
 # go-networkfs — network filesystem drivers vendored via git submodule.
 # Builds per-driver static libs (libftp.a, …) and a combined libnetworkfs.a
 # dispatcher, all consumed by the FileProvider extension via cgo.
-NETWORKFS_SRC := ./vendor/go-networkfs
+NETWORKFS_SRC ?= ../go-networkfs
 NETWORKFS_OUT := lib/go-networkfs
 NETWORKFS_DRIVERS := ftp sftp smb dropbox webdav gdrive s3 onedrive
 
