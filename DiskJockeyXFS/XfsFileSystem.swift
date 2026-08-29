@@ -188,7 +188,6 @@ final class XfsFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations {
             volumeID: volID,
             volumeName: FSFileName(string: resolvedName),
             bridgeFS: bridgeFS,
-            blockDevice: blockDevice,
             contextPtr: contextPtr,
             bsdName: bsdName,
             stats: stats

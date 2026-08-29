@@ -21,7 +21,6 @@ final class ErofsVolume: FSVolume,
                          FSVolume.PathConfOperations {
 
     private var bridgeFS: OpaquePointer?
-    private let blockDevice: FSBlockDeviceResource
     private var contextPtr: UnsafeMutableRawPointer?
     private let bsdName: String
     private let stats: IOStatsCollector
@@ -30,12 +29,10 @@ final class ErofsVolume: FSVolume,
     init(volumeID: FSVolume.Identifier,
          volumeName: FSFileName,
          bridgeFS: OpaquePointer,
-         blockDevice: FSBlockDeviceResource,
          contextPtr: UnsafeMutableRawPointer,
          bsdName: String,
          stats: IOStatsCollector) {
         self.bridgeFS = bridgeFS
-        self.blockDevice = blockDevice
         self.contextPtr = contextPtr
         self.bsdName = bsdName
         self.stats = stats
@@ -55,20 +52,12 @@ final class ErofsVolume: FSVolume,
 
     // MARK: - Capabilities
 
+    /// EROFS has no journal — it is an immutable image format, so there
+    /// is no log to replay and nothing to recover.
+    static let readOnlyCapabilities = ReadOnlyVolumeCapabilities(hasJournal: false)
+
     var supportedVolumeCapabilities: FSVolume.SupportedCapabilities {
-        let caps = FSVolume.SupportedCapabilities()
-        caps.supportsPersistentObjectIDs = true
-        caps.supportsSymbolicLinks = true
-        caps.supportsHardLinks = false
-        caps.supportsJournal = false
-        caps.supportsActiveJournal = false
-        caps.supportsSparseFiles = true
-        caps.supports2TBFiles = true
-        // EROFS NIDs are 64-bit.
-        caps.supports64BitObjectIDs = true
-        // EROFS (Linux) is case-sensitive.
-        caps.caseFormat = .sensitive
-        return caps
+        Self.readOnlyCapabilities.fsCapabilities
     }
 
     var volumeStatistics: FSStatFSResult {

@@ -22,7 +22,6 @@ final class SquashfsVolume: FSVolume,
 
     /// Opaque pointer to the Rust bridge filesystem context.
     private var bridgeFS: OpaquePointer?
-    private let blockDevice: FSBlockDeviceResource
     /// Retained `BlockDeviceContext`; released in `deactivate()` after umount.
     private var contextPtr: UnsafeMutableRawPointer?
     private let bsdName: String
@@ -32,12 +31,10 @@ final class SquashfsVolume: FSVolume,
     init(volumeID: FSVolume.Identifier,
          volumeName: FSFileName,
          bridgeFS: OpaquePointer,
-         blockDevice: FSBlockDeviceResource,
          contextPtr: UnsafeMutableRawPointer,
          bsdName: String,
          stats: IOStatsCollector) {
         self.bridgeFS = bridgeFS
-        self.blockDevice = blockDevice
         self.contextPtr = contextPtr
         self.bsdName = bsdName
         self.stats = stats
@@ -59,37 +56,34 @@ final class SquashfsVolume: FSVolume,
 
     // MARK: - Capabilities
 
+    /// The name `statfs` reports, and the one place it is spelled.
+    static let fsTypeName = "squashfs"
+
+    /// SquashFS is an immutable image: no journal, and it advertises
+    /// 32-bit object identifiers where the sibling drivers advertise
+    /// 64-bit.
+    static let readOnlyCapabilities = ReadOnlyVolumeCapabilities(
+        hasJournal: false, supports64BitObjectIDs: false)
+
     var supportedVolumeCapabilities: FSVolume.SupportedCapabilities {
-        let caps = FSVolume.SupportedCapabilities()
-        caps.supportsPersistentObjectIDs = true
-        caps.supportsSymbolicLinks = true
-        caps.supportsHardLinks = false
-        caps.supportsJournal = false
-        caps.supportsActiveJournal = false
-        caps.supportsSparseFiles = true
-        caps.supports2TBFiles = true
-        // SquashFS inode numbers are 32-bit.
-        caps.supports64BitObjectIDs = false
-        // SquashFS (Linux) is case-sensitive.
-        caps.caseFormat = .sensitive
-        return caps
+        Self.readOnlyCapabilities.fsCapabilities
     }
 
     var volumeStatistics: FSStatFSResult {
-        let result = FSStatFSResult(fileSystemTypeName: "squashfs")
-        guard let fs = bridgeFS else { return result }
+        guard let fs = bridgeFS else {
+            return FSStatFSResult(fileSystemTypeName: Self.fsTypeName)
+        }
         var info = fs_squashfs_volume_info_t()
         fs_squashfs_get_volume_info(fs, &info)
-        let bs = Int(info.block_size)
-        result.blockSize = bs
-        result.ioSize = bs
-        // Read-only + compressed: report used blocks as total, nothing free.
-        result.totalBlocks = bs > 0 ? info.bytes_used / UInt64(bs) : 0
-        result.availableBlocks = 0
-        result.freeBlocks = 0
-        result.totalFiles = UInt64(info.inode_count)
-        result.freeFiles = 0
-        return result
+        // A SquashFS image is exactly as large as its contents and
+        // cannot grow, so used is total and nothing is free.
+        let shared = ReadOnlyVolumeInfo(
+            capacity: .compressedImage(blockSize: UInt64(info.block_size),
+                                       usedBytes: info.bytes_used),
+            ioSize: UInt64(info.block_size),
+            totalInodes: UInt64(info.inode_count),
+            freeInodes: nil)
+        return ReadOnlyVolumeSupport.statFS(shared, fileSystemTypeName: Self.fsTypeName)
     }
 
     // MARK: - Lifecycle

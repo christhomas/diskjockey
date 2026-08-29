@@ -26,7 +26,6 @@ final class NTFSVolume: FSVolume,
     private var bridgeFS: OpaquePointer?
 
     /// The block device resource
-    private let blockDevice: FSBlockDeviceResource
 
     /// Retained block-device callback context (`BlockDeviceContext`).
     /// Held as an opaque pointer so the C callbacks in `cfg` can deref it
@@ -80,7 +79,6 @@ final class NTFSVolume: FSVolume,
     init(volumeID: FSVolume.Identifier,
          volumeName: FSFileName,
          bridgeFS: OpaquePointer,
-         blockDevice: FSBlockDeviceResource,
          contextPtr: UnsafeMutableRawPointer,
          cfgSizeBytes: UInt64,
          bsdName: String,
@@ -90,7 +88,6 @@ final class NTFSVolume: FSVolume,
          partitionLength: UInt64? = nil,
          stats: IOStatsCollector) {
         self.bridgeFS = bridgeFS
-        self.blockDevice = blockDevice
         self.contextPtr = contextPtr
         self.cfgSizeBytes = cfgSizeBytes
         self.bsdName = bsdName

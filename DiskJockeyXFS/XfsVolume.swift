@@ -22,7 +22,6 @@ final class XfsVolume: FSVolume,
                          FSVolume.PathConfOperations {
 
     private var bridgeFS: OpaquePointer?
-    private let blockDevice: FSBlockDeviceResource
     private var contextPtr: UnsafeMutableRawPointer?
     private let bsdName: String
     private let stats: IOStatsCollector
@@ -31,12 +30,10 @@ final class XfsVolume: FSVolume,
     init(volumeID: FSVolume.Identifier,
          volumeName: FSFileName,
          bridgeFS: OpaquePointer,
-         blockDevice: FSBlockDeviceResource,
          contextPtr: UnsafeMutableRawPointer,
          bsdName: String,
          stats: IOStatsCollector) {
         self.bridgeFS = bridgeFS
-        self.blockDevice = blockDevice
         self.contextPtr = contextPtr
         self.bsdName = bsdName
         self.stats = stats
@@ -56,43 +53,36 @@ final class XfsVolume: FSVolume,
 
     // MARK: - Capabilities
 
+    /// The name `statfs` reports, and the one place it is spelled.
+    static let fsTypeName = "xfs"
+
+    /// XFS is journalled. This was `false` once, inherited from the
+    /// EROFS volume this file was copied from — which is why it is a
+    /// parameter now rather than nine assignments repeated per
+    /// filesystem. See ReadOnlyVolumeCapabilities.
+    static let readOnlyCapabilities = ReadOnlyVolumeCapabilities(hasJournal: true)
+
     var supportedVolumeCapabilities: FSVolume.SupportedCapabilities {
-        let caps = FSVolume.SupportedCapabilities()
-        caps.supportsPersistentObjectIDs = true
-        caps.supportsSymbolicLinks = true
-        caps.supportsHardLinks = false
-        // XFS is a journalling filesystem — this said `false`,
-        // inherited from the EROFS volume this file was copied from,
-        // and EROFS genuinely has no journal.
-        //
-        // `supportsJournal` describes the FORMAT; `supportsActiveJournal`
-        // describes this mount. The driver refuses a dirty log rather
-        // than replaying one, so the log is never active from here.
-        caps.supportsJournal = true
-        caps.supportsActiveJournal = false
-        caps.supportsSparseFiles = true
-        caps.supports2TBFiles = true
-        // XFS inode numbers are 64-bit.
-        caps.supports64BitObjectIDs = true
-        // XFS (Linux) is case-sensitive.
-        caps.caseFormat = .sensitive
-        return caps
+        Self.readOnlyCapabilities.fsCapabilities
     }
 
     var volumeStatistics: FSStatFSResult {
-        let result = FSStatFSResult(fileSystemTypeName: "xfs")
-        guard let fs = bridgeFS else { return result }
+        guard let fs = bridgeFS else {
+            return FSStatFSResult(fileSystemTypeName: Self.fsTypeName)
+        }
         var info = fs_xfs_volume_info_t()
         fs_xfs_get_volume_info(fs, &info)
-        let bs = Int(info.block_size)
-        result.blockSize = bs
-        result.ioSize = bs
-        result.totalBlocks = UInt64(info.total_blocks)
-        result.availableBlocks = 0
-        result.freeBlocks = 0
-        result.totalFiles = info.inode_count
-        result.freeFiles = 0
-        return result
+        // XFS counts blocks, so the figures pass straight through. The
+        // free counts are not reported by the driver; zero is what the
+        // field means when it is unknown.
+        let shared = ReadOnlyVolumeInfo(
+            capacity: .blocks(blockSize: UInt64(info.block_size),
+                              total: UInt64(info.total_blocks),
+                              free: 0),
+            ioSize: UInt64(info.block_size),
+            totalInodes: info.inode_count,
+            freeInodes: nil)
+        return ReadOnlyVolumeSupport.statFS(shared, fileSystemTypeName: Self.fsTypeName)
     }
 
     // MARK: - Lifecycle
@@ -328,42 +318,37 @@ final class XfsVolume: FSVolume,
 
     // MARK: - Helpers
 
-    static func fsItemType(fromRaw raw: UInt32) -> FSItem.ItemType {
+    /// XFS's on-disk file-type codes. Kept here because the numbers
+    /// are XFS's; the mapping onto FSKit is shared.
+    static func readOnlyFileType(fromRaw raw: UInt32) -> ReadOnlyFileType {
         switch raw {
         case 1: return .file        // FS_XFS_FT_REG_FILE
         case 2: return .directory   // FS_XFS_FT_DIR
         case 7: return .symlink     // FS_XFS_FT_SYMLINK
-        default: return .file
+        default: return .other
         }
     }
 
+    static func fsItemType(fromRaw raw: UInt32) -> FSItem.ItemType {
+        readOnlyFileType(fromRaw: raw).fsItemType
+    }
+
     static func joinPath(_ parent: String, _ child: String) -> String {
-        parent == "/" ? "/\(child)" : "\(parent)/\(child)"
+        ReadOnlyVolumeSupport.joinPath(parent, child)
     }
 
     static func attributes(from attr: fs_xfs_attr_t,
                            parentInode: UInt64?) -> FSItem.Attributes {
-        let attrs = FSItem.Attributes()
-        attrs.type = fsItemType(fromRaw: attr.file_type)
-        attrs.mode = UInt32(attr.mode)
-        attrs.uid = attr.uid
-        attrs.gid = attr.gid
-        attrs.flags = 0
-        attrs.size = attr.size
-        attrs.allocSize = attr.size
-        attrs.linkCount = attr.link_count
-        let ts = timespec(tv_sec: Int(attr.mtime), tv_nsec: 0)
-        attrs.accessTime = ts
-        attrs.modifyTime = ts
-        attrs.changeTime = ts
-        attrs.birthTime = ts
-        if let id = FSItem.Identifier(rawValue: attr.inode) {
-            attrs.fileID = id
-        }
-        let parentRaw = parentInode ?? 1
-        if let parentID = FSItem.Identifier(rawValue: parentRaw) {
-            attrs.parentID = parentID
-        }
-        return attrs
+        ReadOnlyVolumeSupport.fsAttributes(
+            from: ReadOnlyFileAttributes(
+                inode: attr.inode,
+                mode: UInt32(attr.mode),
+                uid: attr.uid,
+                gid: attr.gid,
+                size: attr.size,
+                linkCount: attr.link_count,
+                mtime: Int64(attr.mtime),
+                fileType: readOnlyFileType(fromRaw: attr.file_type)),
+            parentInode: parentInode)
     }
 }

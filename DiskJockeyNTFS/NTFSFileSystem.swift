@@ -394,7 +394,6 @@ final class NTFSFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations {
             volumeID: volID,
             volumeName: FSFileName(string: resolvedName),
             bridgeFS: bridgeFS,
-            blockDevice: blockDevice,
             contextPtr: contextPtr,
             cfgSizeBytes: cfgSizeBytes,
             bsdName: bsdName,
