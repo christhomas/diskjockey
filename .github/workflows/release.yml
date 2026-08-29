@@ -46,6 +46,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # The siblings are checkouts beside this repository now, not
+      # submodules. Cloned at the ref SIBLING_PINS.txt names, so CI builds
+      # what the pin says rather than whatever a developer has locally.
+      # A fresh clone is clean and on the pinned ref, so the build takes
+      # it as-is.
+      - name: Clone sibling projects
+        shell: bash
+        run: |
+          ref=$(awk '$1=="go-networkfs"{print $2}' SIBLING_PINS.txt)
+          git clone --depth 1 --branch "$ref" \
+            https://github.com/christhomas/go-networkfs.git ../go-networkfs
+
       - name: Select Xcode
         run: |
           XCODE=$(find /Applications -maxdepth 1 -name 'Xcode*.app' -type d 2>/dev/null | sort -V | tail -1)
