@@ -12,9 +12,57 @@
 
 require 'fileutils'
 require 'json'
+require 'net/http'
+require 'uri'
+require 'tmpdir'
 
 ROOT = File.expand_path(File.join(__dir__, '..'))
-TABLER_DIR = File.join(ROOT, 'vendor', 'tabler-icons', 'icons')
+
+# The Tabler release this project's icons come from. Pinned rather than
+# tracking the default branch: an icon that changes shape under us would
+# silently alter the app's appearance on the next run of this script.
+TABLER_TAG = ENV.fetch('TABLER_TAG', 'v3.44.0')
+
+# Fetched, not vendored.
+#
+# This used to read `vendor/tabler-icons/icons`, a 73 MB submodule
+# carrying the entire icon set — around 5,900 SVGs — so that this script
+# could read the 46 named in MAPPING below. That is about 70 KB of actual
+# need.
+#
+# The fetch happens only when the mapping changes, and its output is the
+# imagesets committed under DiskJockeyApplication/Assets.xcassets, so a
+# normal build never touches the network. A missing icon is reported by
+# name, the same as it was when the directory was local.
+#
+# Tabler is MIT; the attribution in THIRD_PARTY_LICENSES.md stands either
+# way, because the icons ship inside the app.
+TABLER_BASE = "https://raw.githubusercontent.com/tabler/tabler-icons/#{TABLER_TAG}/icons"
+
+def fetch_svg(style, basename)
+  uri = URI("#{TABLER_BASE}/#{style}/#{basename}.svg")
+  res = Net::HTTP.get_response(uri)
+  return nil unless res.is_a?(Net::HTTPSuccess)
+  res.body
+rescue StandardError => e
+  warn "  fetch failed for #{style}/#{basename}.svg: #{e.class}: #{e.message}"
+  nil
+end
+
+# Written to a scratch directory so the rest of the script keeps taking a
+# path, and so one icon used twice is fetched once.
+FETCH_CACHE = {}
+def local_copy(dir, style, basename)
+  key = "#{style}/#{basename}"
+  return FETCH_CACHE[key] if FETCH_CACHE.key?(key)
+  body = fetch_svg(style, basename)
+  path = nil
+  if body
+    path = File.join(dir, "#{style}-#{basename}.svg")
+    File.write(path, body)
+  end
+  FETCH_CACHE[key] = path
+end
 ASSETS_DIR = File.join(ROOT, 'DiskJockeyApplication', 'Assets.xcassets')
 
 # SF Symbol → [tabler_style, tabler_basename]. The Tabler basename is the
@@ -103,9 +151,14 @@ end
 
 missing = []
 created = 0
+scratch = Dir.mktmpdir('tabler-icons')
+at_exit { FileUtils.remove_entry(scratch) if File.directory?(scratch) }
+
+puts "Fetching Tabler icons at #{TABLER_TAG}"
+
 MAPPING.each do |sf_symbol, (style, basename)|
-  src = File.join(TABLER_DIR, style, "#{basename}.svg")
-  unless File.exist?(src)
+  src = local_copy(scratch, style, basename)
+  if src.nil?
     missing << "#{sf_symbol} → #{style}/#{basename}.svg"
     next
   end
@@ -115,8 +168,8 @@ MAPPING.each do |sf_symbol, (style, basename)|
 end
 
 EXTRAS.each do |asset, (style, basename)|
-  src = File.join(TABLER_DIR, style, "#{basename}.svg")
-  unless File.exist?(src)
+  src = local_copy(scratch, style, basename)
+  if src.nil?
     missing << "#{asset} → #{style}/#{basename}.svg"
     next
   end

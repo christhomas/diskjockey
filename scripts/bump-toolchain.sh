@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# bump-toolchain.sh — bump the pinned Rust toolchain across ALL vendor crates
+# bump-toolchain.sh — bump the pinned Rust toolchain across ALL sibling crates
 # in lockstep, verify each, and open a PR per repo.
 #
 # WHY THIS EXISTS
 # ---------------
-# Every vendor crate pins its rustc via its own `rust-toolchain.toml`, and
+# Every sibling crate pins its rustc via its own `rust-toolchain.toml`, and
 # DiskJockey's FSKit extensions statically link several of those crates'
 # `.a` files into one binary. Linking staticlibs built by *different* rustc
 # versions into a single Mach-O produces a duplicate `_rust_eh_personality`
@@ -15,7 +15,7 @@
 # of a hand-edited, easy-to-desync chore across N repos.
 #
 # WHAT IT DOES (safe phase, the default)
-#   For each vendor crate that has a rust-toolchain.toml:
+#   For each sibling crate that has a rust-toolchain.toml:
 #     1. fetch origin, branch `chore/toolchain-<version>` off the default branch
 #     2. rewrite the `channel = "..."` line to <version>
 #     3. verify under the new toolchain: cargo fmt --check, clippy -D warnings,
@@ -26,22 +26,19 @@
 # WHAT IT DELIBERATELY DOES NOT DO
 #   - It never merges PRs, pushes version tags, or publishes to crates.io.
 #     Those are irreversible / need human judgement and stay manual.
-#   - After the per-repo PRs are merged, re-point the parent submodules with:
-#         scripts/bump-toolchain.sh --repin
-#     which advances each submodule to its merged default branch, regenerates
-#     VENDOR_PINS.txt (`make pins`), and opens the parent PR. Tagging the
-#     crate releases (which triggers crates.io publish) remains a manual step.
+#   - There is no --repin step any more. The vendor/ submodules are gone:
+#     DiskJockey builds each sibling from a worktree of the tag named in
+#     SIBLING_PINS.txt, so "adopt the new toolchain" means editing that file
+#     once the crates are tagged. Tagging (which triggers crates.io publish)
+#     remains a manual step.
 #
 # USAGE
 #   scripts/bump-toolchain.sh <version> [--dry-run] [--no-verify] [--no-pr]
-#   scripts/bump-toolchain.sh --repin   [--dry-run]
 #
 #   <version>     e.g. 1.96.0 — the rustc channel to pin everywhere.
 #   --dry-run     print what would change; touch nothing.
 #   --no-verify   skip the cargo fmt/clippy/test gate (NOT recommended).
 #   --no-pr       commit + push the branch but do not open a PR.
-#   --repin       parent-side: bump submodule pointers to merged defaults +
-#                 regenerate VENDOR_PINS.txt + open the DiskJockey PR.
 #
 # REQUIREMENTS: bash, git, gh (authenticated), rustup with the target toolchain
 # installable. Run from anywhere inside the repo.
@@ -65,7 +62,7 @@ for arg in "$@"; do
         --dry-run)   DRY_RUN=1 ;;
         --no-verify) NO_VERIFY=1 ;;
         --no-pr)     NO_PR=1 ;;
-        --repin)     MODE="repin" ;;
+        --repin)     echo "--repin is gone: the submodules it advanced no longer exist. Edit SIBLING_PINS.txt instead." >&2; exit 2 ;;
         -h|--help)   sed -n '2,55p' "$0"; exit 0 ;;
         --*)         echo "${RED}unknown flag: $arg${NC}" >&2; exit 2 ;;
         *)           VERSION="$arg" ;;
@@ -86,10 +83,14 @@ default_branch() {
 }
 
 # ---- crate discovery -------------------------------------------------------
-# A vendor crate is bumpable iff it carries its own rust-toolchain.toml.
+# The crates are sibling checkouts beside this repository now, not submodules
+# under vendor/. A sibling is bumpable iff it carries its own
+# rust-toolchain.toml, which is also what tells a Rust crate apart from the
+# other things that live alongside (go-networkfs, tabler-icons).
+SIBLING_ROOT="${SIBLING_ROOT:-$(cd "$SRCROOT/.." && pwd)}"
 discover_crates() {
     local d
-    for d in "$SRCROOT"/vendor/*/; do
+    for d in "$SIBLING_ROOT"/*/; do
         [ -f "${d}rust-toolchain.toml" ] && basename "$d"
     done
 }
@@ -99,48 +100,10 @@ current_channel() { # <crate-dir>
         | head -1 | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/'
 }
 
-# ===========================================================================
-# MODE: repin (parent side, after crate PRs merge)
-# ===========================================================================
-if [ "$MODE" = "repin" ]; then
-    [ -n "$VERSION" ] && echo "${YELLOW}note: --repin ignores the version argument '${VERSION}'.${NC}"
-    echo "${BOLD}Re-pinning parent submodules to merged default branches…${NC}"
-    changed=0
-    while read -r crate; do
-        dir="vendor/$crate"
-        ( cd "$dir" && git fetch --quiet origin )
-        db="$(cd "$dir" && default_branch)"
-        old="$(cd "$dir" && git rev-parse --short HEAD)"
-        new="$(cd "$dir" && git rev-parse --short "origin/$db")"
-        if [ "$old" = "$new" ]; then
-            printf "  %-26s %s (unchanged)\n" "$crate" "$old"
-            continue
-        fi
-        printf "  %-26s %s -> %s\n" "$crate" "$old" "$new"
-        run bash -c "cd '$dir' && git checkout --quiet 'origin/$db'"
-        changed=1
-    done < <(discover_crates)
-
-    if [ "$changed" = 0 ]; then
-        echo "${GREEN}All submodules already at their merged defaults. Nothing to do.${NC}"
-        exit 0
-    fi
-
-    # `run` echoes (and skips) in dry-run; only swallow make's output for real.
-    if [ "$DRY_RUN" = 1 ]; then echo "  ${YELLOW}[dry-run]${NC} make pins"; else make pins >/dev/null; fi
-    branch="chore/bump-vendor-toolchain-pins"
-    run git checkout -B "$branch"
-    run git add VENDOR_PINS.txt vendor/
-    run git commit -m "build: advance vendor submodules to their bumped toolchain builds"
-    # --force-with-lease: the branch is a throwaway chore branch owned by this
-    # script; on a re-run after a partial failure `checkout -B` resets it to a
-    # new commit, so a plain push would be rejected non-fast-forward. Lease (not
-    # plain --force) so we never clobber an unexpected remote change.
-    run git push -u --force-with-lease origin "$branch"
-    [ "$NO_PR" = 1 ] || run gh pr create --fill --base "$(default_branch)" --head "$branch"
-    echo "${GREEN}Parent re-pin prepared. Review the PR, then tag/publish crates as needed.${NC}"
-    exit 0
-fi
+# The --repin mode is gone with the submodules. There is no pointer in this
+# repository to advance: DiskJockey builds each sibling from a worktree of the
+# tag in SIBLING_PINS.txt, so adopting a bumped toolchain means editing that
+# file after the crates are tagged.
 
 # ===========================================================================
 # MODE: bump (per-crate, the default)
@@ -160,7 +123,7 @@ summary=""
 skipped=""
 
 while read -r crate; do
-    dir="$SRCROOT/vendor/$crate"
+    dir="$SIBLING_ROOT/$crate"
     cur="$(current_channel "$dir")"
     if [ "$cur" = "$VERSION" ]; then
         skipped+="  ${crate} (already ${VERSION})\n"
@@ -212,4 +175,4 @@ echo
 echo "${BOLD}Next steps (manual — irreversible / need review):${NC}"
 echo "  1. Review + merge each crate PR once its CI is green."
 echo "  2. Tag each released crate (vX.Y.Z) if publishing to crates.io."
-echo "  3. Run: scripts/bump-toolchain.sh --repin   (re-points parent submodules)."
+echo "  3. Tag the crates, then point SIBLING_PINS.txt at the new tags."

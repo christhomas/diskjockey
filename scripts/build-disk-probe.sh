@@ -11,14 +11,14 @@
 #
 # Environment:
 #   SRCROOT       — project root (default: pwd)
-#   PROBE_SRC     — path to the Rust source (default: $SRCROOT/vendor/rust-disk-probe)
+#   PROBE_SRC     — path to the Rust source (default: $SRCROOT/../rust-disk-probe)
 #   PROBE_OUT     — output directory     (default: $SRCROOT/lib/diskprobe)
 
 set -e
 
 SRCROOT="${SRCROOT:-$(pwd)}"
 SRCROOT="$(cd "${SRCROOT}" && pwd)"
-PROBE_SRC="${PROBE_SRC:-${SRCROOT}/vendor/rust-disk-probe}"
+PROBE_SRC="${PROBE_SRC:-${SRCROOT}/../rust-disk-probe}"
 PROBE_OUT="${PROBE_OUT:-${SRCROOT}/lib/diskprobe}"
 case "$PROBE_SRC" in /*) ;; *) PROBE_SRC="${SRCROOT}/${PROBE_SRC}" ;; esac
 case "$PROBE_OUT" in /*) ;; *) PROBE_OUT="${SRCROOT}/${PROBE_OUT}" ;; esac

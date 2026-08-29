@@ -46,7 +46,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
 
       - name: Select Xcode
         run: |
@@ -75,7 +74,7 @@ jobs:
           # Also key on the bundle crates' manifests/lockfiles: lib/bundle_*
           # (staticlibs + headers) are produced from rust-bundles/dj-*-bundle, so
           # a dependency/version change there must invalidate the cache too.
-          key: vendor-${{ runner.os }}-v3-${{ hashFiles('VENDOR_PINS.txt', 'scripts/build-bundles.sh', 'rust-bundles/**/Cargo.toml', 'rust-bundles/**/Cargo.lock') }}
+          key: vendor-${{ runner.os }}-v3-${{ hashFiles('SIBLING_PINS.txt', 'scripts/build-bundles.sh', 'rust-bundles/**/Cargo.toml', 'rust-bundles/**/Cargo.lock') }}
 
       - name: Restore Cargo cache
         if: steps.vendor-cache.outputs.cache-hit != 'true'
@@ -85,15 +84,7 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-            vendor/rust-fs-ext4/target
-            vendor/rust-fs-ntfs/target
-            vendor/rust-fs-erofs/target
-            vendor/rust-fs-squashfs/target
-            vendor/rust-img-qcow2/target
-            vendor/rust-img-vhd/target
-            vendor/rust-img-vhdx/target
-            vendor/rust-img-vmdk/target
-          key: cargo-${{ runner.os }}-${{ hashFiles('vendor/rust-*/Cargo.lock', 'vendor/rust-*/rust-toolchain.toml') }}
+          key: cargo-${{ runner.os }}-${{ hashFiles('rust-bundles/**/Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
 
       - name: Build vendor libraries
@@ -102,7 +93,7 @@ jobs:
         # (via build-bundles.sh) — the aggregator staticlibs + C headers the
         # FSKit extensions actually link/#import (e.g. fs_ntfs.h). Without it the
         # archive fails: DiskJockeyNTFS-Bridging-Header.h → 'fs_ntfs.h' not found.
-        run: make vendor-fs-ext4 vendor-fs-ntfs vendor-fs-erofs vendor-fs-squashfs vendor-img-containers vendor-gonetworkfs vendor-bundles
+        run: make vendor-gonetworkfs vendor-bundles
 
       # ---------------------------------------------------------------------------
       # Code signing
