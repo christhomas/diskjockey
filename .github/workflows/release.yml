@@ -51,6 +51,18 @@ jobs:
       # what the pin says rather than whatever a developer has locally.
       # A fresh clone is clean and on the pinned ref, so the build takes
       # it as-is.
+      # chore owns the sibling builds now, so CI needs it. Installed from
+      # the release archive rather than the Homebrew tap: `brew install`
+      # on a macOS runner costs a minute or more of tap update, and this
+      # is one binary.
+      - name: Install chore
+        shell: bash
+        run: |
+          ver=$(awk '$1=="chore"{print $2}' SIBLING_PINS.txt)
+          curl -fsSL "https://github.com/antimatter-studios/chore/releases/download/v${ver}/chore-${ver}-darwin-arm64.tar.gz" \
+            | tar -xz -C /usr/local/bin chore
+          chore --version
+
       - name: Clone sibling projects
         shell: bash
         run: |
