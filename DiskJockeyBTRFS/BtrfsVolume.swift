@@ -53,52 +53,37 @@ final class BtrfsVolume: FSVolume,
 
     // MARK: - Capabilities
 
+    /// The name `statfs` reports, and the one place it is spelled.
+    static let fsTypeName = "btrfs"
+
+    /// Btrfs is journalled. `supportsActiveJournal` stays false: this
+    /// driver refuses a filesystem with a dirty log rather than
+    /// replaying one, so the log tree is never active from here.
+    static let readOnlyCapabilities = ReadOnlyVolumeCapabilities(hasJournal: true)
+
     var supportedVolumeCapabilities: FSVolume.SupportedCapabilities {
-        let caps = FSVolume.SupportedCapabilities()
-        caps.supportsPersistentObjectIDs = true
-        caps.supportsSymbolicLinks = true
-        caps.supportsHardLinks = false
-        // Btrfs is a journalling filesystem — this said `false`,
-        // inherited from the EROFS volume this file was copied from,
-        // and EROFS genuinely has no journal.
-        //
-        // `supportsJournal` describes the FORMAT; `supportsActiveJournal`
-        // describes this mount. The driver refuses a dirty log rather
-        // than replaying one, so the log tree is never active from here.
-        caps.supportsJournal = true
-        caps.supportsActiveJournal = false
-        caps.supportsSparseFiles = true
-        caps.supports2TBFiles = true
-        // Btrfs inode numbers are 64-bit.
-        caps.supports64BitObjectIDs = true
-        // BTRFS (Linux) is case-sensitive.
-        caps.caseFormat = .sensitive
-        return caps
+        Self.readOnlyCapabilities.fsCapabilities
     }
 
     var volumeStatistics: FSStatFSResult {
-        let result = FSStatFSResult(fileSystemTypeName: "btrfs")
-        guard let fs = bridgeFS else { return result }
+        guard let fs = bridgeFS else {
+            return FSStatFSResult(fileSystemTypeName: Self.fsTypeName)
+        }
         var info = fs_btrfs_volume_info_t()
         fs_btrfs_get_volume_info(fs, &info)
-        // Btrfs reports capacity in BYTES rather than in blocks, and has
-        // no fixed inode table — inodes are allocated from the same pool
-        // as data, so there is no meaningful total or free inode count to
-        // report. Zero is the honest answer for those; inventing one from
-        // the byte figures would be a number a user could act on wrongly.
-        let bs = Int(info.sector_size)
-        result.blockSize = bs
-        result.ioSize = Int(info.node_size)
-        let sectors = bs > 0 ? info.total_bytes / UInt64(bs) : 0
-        let usedSectors = bs > 0 ? info.bytes_used / UInt64(bs) : 0
-        result.totalBlocks = sectors
-        result.freeBlocks = sectors >= usedSectors ? sectors - usedSectors : 0
-        // This driver is read-only, so nothing is available for the
-        // caller to allocate into regardless of what is free.
-        result.availableBlocks = 0
-        result.totalFiles = 0
-        result.freeFiles = 0
-        return result
+        // Btrfs reports capacity in BYTES rather than blocks, advertises
+        // its node size for I/O rather than its sector size, and has no
+        // fixed inode table — inodes come from the same pool as data, so
+        // there is no total or free count to give. The nil inode counts
+        // say that; see ReadOnlyVolumeInfo.
+        let shared = ReadOnlyVolumeInfo(
+            capacity: .bytes(sectorSize: UInt64(info.sector_size),
+                             total: info.total_bytes,
+                             used: info.bytes_used),
+            ioSize: UInt64(info.node_size),
+            totalInodes: nil,
+            freeInodes: nil)
+        return ReadOnlyVolumeSupport.statFS(shared, fileSystemTypeName: Self.fsTypeName)
     }
 
     // MARK: - Lifecycle
