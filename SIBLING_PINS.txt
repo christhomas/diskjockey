@@ -10,10 +10,9 @@
 # cannot reach the app's binary. A dirty main stops the build rather than
 # guessing what it meant.
 #
-# TAGS ARE THE INTENT, and main is a stopgap. No tag in the family yet contains
-# its crate's chores.yml — it landed after the last release everywhere — and the
-# build contract lives in that file. Once the crates are tagged, these become
-# tags and stay that way.
+# TAGS, not branches. The build contract lives in each project's chores.yml,
+# so a pin can only name a tag that contains one — which is why this said
+# `main` until 2026-08-29, when the whole family was released.
 #
 # The chore version CI installs. The build contract is expressed in each
 # project's chores.yml, so the tool that reads it is a pinned input like
@@ -22,4 +21,4 @@ chore               0.8.0
 
 # project           ref
 # -------           ---
-go-networkfs        main
+go-networkfs        v0.1.4
