@@ -33,3 +33,6 @@ DiskJockeyApplication/Resources/OAuthClients.json
 # Local environment files, never committed.
 .env.local
 .env.local.*
+
+# chore fingerprint cache (sources:/generates: checksums). Derived data.
+.chore/
