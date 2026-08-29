@@ -29,8 +29,30 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      # The siblings are checkouts beside this repository now, not
+      # submodules. Cloned at the ref SIBLING_PINS.txt names, so CI builds
+      # what the pin says rather than whatever a developer has locally.
+      # A fresh clone is clean and on the pinned ref, so the build takes
+      # it as-is.
+      # chore owns the sibling builds now, so CI needs it. Installed from
+      # the release archive rather than the Homebrew tap: `brew install`
+      # on a macOS runner costs a minute or more of tap update, and this
+      # is one binary.
+      - name: Install chore
+        shell: bash
+        run: |
+          ver=$(awk '$1=="chore"{print $2}' SIBLING_PINS.txt)
+          curl -fsSL "https://github.com/antimatter-studios/chore/releases/download/v${ver}/chore-${ver}-darwin-arm64.tar.gz" \
+            | tar -xz -C /usr/local/bin chore
+          chore --version
+
+      - name: Clone sibling projects
+        shell: bash
+        run: |
+          ref=$(awk '$1=="go-networkfs"{print $2}' SIBLING_PINS.txt)
+          git clone --depth 1 --branch "$ref" \
+            https://github.com/christhomas/go-networkfs.git ../go-networkfs
 
       # Auto-select the newest installed Xcode on the runner.
       - name: Select Xcode
@@ -50,14 +72,15 @@ jobs:
         with:
           go-version: stable
 
-      # lib/ output is cached by vendor pin manifest.
-      # A cache hit skips all Rust + Go compilation.
-      - name: Restore vendor library cache
+      # lib/ output is keyed on what now determines it: the bundle
+      # manifests, which name the published crate versions, and the
+      # sibling pins. VENDOR_PINS.txt is gone with the submodules.
+      - name: Restore library cache
         id: vendor-cache
         uses: actions/cache@v4
         with:
           path: lib/
-          key: vendor-${{ runner.os }}-${{ hashFiles('VENDOR_PINS.txt', 'rust-bundles/**/Cargo.toml', 'rust-bundles/**/Cargo.lock') }}
+          key: lib-${{ runner.os }}-${{ hashFiles('SIBLING_PINS.txt', 'rust-bundles/**/Cargo.toml', 'rust-bundles/**/Cargo.lock') }}
 
       # Only restore intermediate Rust artifacts on a vendor cache miss
       # so the next miss still benefits from incremental compilation.
@@ -69,35 +92,17 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-            vendor/rust-fs-ext4/target
-            vendor/rust-fs-ntfs/target
-            vendor/rust-fs-erofs/target
-            vendor/rust-fs-squashfs/target
-            vendor/rust-img-qcow2/target
-            vendor/rust-img-vhd/target
-            vendor/rust-img-vhdx/target
-            vendor/rust-img-vmdk/target
-          key: cargo-${{ runner.os }}-${{ hashFiles('vendor/rust-*/Cargo.lock', 'vendor/rust-*/rust-toolchain.toml') }}
+          key: cargo-${{ runner.os }}-${{ hashFiles('rust-bundles/**/Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
 
-      # llvm-objcopy is required by build-img-containers.sh to weaken fs_core
-      # symbols in the img crates so they don't clash with those in fs_ext4/ntfs.
-      # macOS runners do not ship it; install from Homebrew only on a cache miss.
-      - name: Install llvm (for objcopy)
-        if: steps.vendor-cache.outputs.cache-hit != 'true'
-        run: brew install llvm
-
-      - name: Build vendor libraries
+      - name: Build libraries
         if: steps.vendor-cache.outputs.cache-hit != 'true'
         # vendor-bundles builds the per-extension aggregator staticlibs
         # (lib/bundle_<fs>/) and their C headers, which the FSKit extension
         # targets include via HEADER_SEARCH_PATHS. Without it the Xcode build
         # fails with "'fs_<fs>.h' file not found".
-        run: make vendor-fs-ext4 vendor-fs-ntfs vendor-fs-erofs vendor-fs-squashfs vendor-img-containers vendor-gonetworkfs vendor-bundles
+        run: make vendor-gonetworkfs vendor-bundles
 
-      # Shared with the pre-commit hook — single source of truth for pin validation.
-      - name: Validate vendor pins
-        run: scripts/check-vendor-pins.sh
 
       - name: Install xcbeautify
         run: brew install xcbeautify

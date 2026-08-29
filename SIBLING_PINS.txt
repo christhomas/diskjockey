@@ -1,0 +1,25 @@
+# Which version of each sibling project this repository builds against.
+#
+# Replaces VENDOR_PINS.txt, which recorded submodule gitlinks — arbitrary
+# commits like v0.1.3-18-g2e5da31, eighteen commits past a release, so
+# "which version is in the app" had no answer anyone could say out loud.
+#
+# The siblings are checkouts beside this repository now. scripts/sibling-build.sh
+# builds each one: from its checkout when that is on a clean main, and otherwise
+# from a throwaway worktree of the ref named here, so a developer's branch
+# cannot reach the app's binary. A dirty main stops the build rather than
+# guessing what it meant.
+#
+# TAGS ARE THE INTENT, and main is a stopgap. No tag in the family yet contains
+# its crate's chores.yml — it landed after the last release everywhere — and the
+# build contract lives in that file. Once the crates are tagged, these become
+# tags and stay that way.
+#
+# The chore version CI installs. The build contract is expressed in each
+# project's chores.yml, so the tool that reads it is a pinned input like
+# any other.
+chore               0.8.0
+
+# project           ref
+# -------           ---
+go-networkfs        main

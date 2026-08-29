@@ -7,7 +7,7 @@
 # Distribution builds resolve every driver from crates.io (the published,
 # proven versions). For local co-development that round-trip is too slow, so
 # this appends a `[patch.crates-io]` block to the bundle's Cargo.toml that
-# redirects the driver — and the shared `am-fs-core` — to the local vendor/
+# redirects the driver — and the shared `am-fs-core` — to the sibling
 # submodules. Edit the submodule source, rebuild, see the change immediately.
 #
 # IMPORTANT: a dev-linked bundle is NOT distribution-clean. Do not commit it.
@@ -37,9 +37,9 @@ toml="$bundle/Cargo.toml"
 # cargo sees two sources and refuses. ntfs vendors its own rust-fs-core
 # (nested); ext4/erofs/squashfs use the shared parent copy.
 if [ "$fs" = "ntfs" ]; then
-    core_path="../../vendor/rust-fs-ntfs/vendor/rust-fs-core"
+    core_path="../../../rust-fs-core"
 else
-    core_path="../../vendor/rust-fs-core"
+    core_path="../../../rust-fs-core"
 fi
 
 # crate -> submodule dir name
@@ -59,17 +59,17 @@ crate_to_dir() {
     echo ""
     echo "# >>> dev-link: LOCAL DEV — DO NOT COMMIT. Restore: make dev-unlink FS=${fs}"
     echo "[patch.crates-io]"
-    echo "am-fs-${fs} = { path = \"../../vendor/rust-fs-${fs}\" }"
+    echo "am-fs-${fs} = { path = \"../../../rust-fs-${fs}\" }"
     echo "am-fs-core = { path = \"${core_path}\" }"
     for extra in "$@"; do
         dir="$(crate_to_dir "$extra")"
         [ -n "$dir" ] || { echo "skip unknown extra crate '$extra'" >&2; continue; }
-        echo "${extra} = { path = \"../../vendor/${dir}\" }"
+        echo "${extra} = { path = \"../../../${dir}\" }"
     done
     echo "# <<< dev-link"
 } >> "$toml"
 
-echo "dev-link: dj-${fs}-bundle now resolves the driver + am-fs-core${*:+ + $*} from local vendor/ submodules."
+echo "dev-link: dj-${fs}-bundle now resolves the driver + am-fs-core${*:+ + $*} from the sibling checkouts beside this repository."
 echo "  edit the submodule source, then rebuild the bundle/app to test."
 echo "  restore distribution-clean state with:  make dev-unlink FS=${fs}"
 if ( cd "$bundle" && cargo build --release --target aarch64-apple-darwin >/dev/null 2>&1 ); then

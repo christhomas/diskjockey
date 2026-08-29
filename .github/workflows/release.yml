@@ -45,8 +45,30 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      # The siblings are checkouts beside this repository now, not
+      # submodules. Cloned at the ref SIBLING_PINS.txt names, so CI builds
+      # what the pin says rather than whatever a developer has locally.
+      # A fresh clone is clean and on the pinned ref, so the build takes
+      # it as-is.
+      # chore owns the sibling builds now, so CI needs it. Installed from
+      # the release archive rather than the Homebrew tap: `brew install`
+      # on a macOS runner costs a minute or more of tap update, and this
+      # is one binary.
+      - name: Install chore
+        shell: bash
+        run: |
+          ver=$(awk '$1=="chore"{print $2}' SIBLING_PINS.txt)
+          curl -fsSL "https://github.com/antimatter-studios/chore/releases/download/v${ver}/chore-${ver}-darwin-arm64.tar.gz" \
+            | tar -xz -C /usr/local/bin chore
+          chore --version
+
+      - name: Clone sibling projects
+        shell: bash
+        run: |
+          ref=$(awk '$1=="go-networkfs"{print $2}' SIBLING_PINS.txt)
+          git clone --depth 1 --branch "$ref" \
+            https://github.com/christhomas/go-networkfs.git ../go-networkfs
 
       - name: Select Xcode
         run: |
@@ -75,7 +97,7 @@ jobs:
           # Also key on the bundle crates' manifests/lockfiles: lib/bundle_*
           # (staticlibs + headers) are produced from rust-bundles/dj-*-bundle, so
           # a dependency/version change there must invalidate the cache too.
-          key: vendor-${{ runner.os }}-v3-${{ hashFiles('VENDOR_PINS.txt', 'scripts/build-bundles.sh', 'rust-bundles/**/Cargo.toml', 'rust-bundles/**/Cargo.lock') }}
+          key: vendor-${{ runner.os }}-v3-${{ hashFiles('SIBLING_PINS.txt', 'scripts/build-bundles.sh', 'rust-bundles/**/Cargo.toml', 'rust-bundles/**/Cargo.lock') }}
 
       - name: Restore Cargo cache
         if: steps.vendor-cache.outputs.cache-hit != 'true'
@@ -85,15 +107,7 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-            vendor/rust-fs-ext4/target
-            vendor/rust-fs-ntfs/target
-            vendor/rust-fs-erofs/target
-            vendor/rust-fs-squashfs/target
-            vendor/rust-img-qcow2/target
-            vendor/rust-img-vhd/target
-            vendor/rust-img-vhdx/target
-            vendor/rust-img-vmdk/target
-          key: cargo-${{ runner.os }}-${{ hashFiles('vendor/rust-*/Cargo.lock', 'vendor/rust-*/rust-toolchain.toml') }}
+          key: cargo-${{ runner.os }}-${{ hashFiles('rust-bundles/**/Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
 
       - name: Build vendor libraries
@@ -102,7 +116,7 @@ jobs:
         # (via build-bundles.sh) — the aggregator staticlibs + C headers the
         # FSKit extensions actually link/#import (e.g. fs_ntfs.h). Without it the
         # archive fails: DiskJockeyNTFS-Bridging-Header.h → 'fs_ntfs.h' not found.
-        run: make vendor-fs-ext4 vendor-fs-ntfs vendor-fs-erofs vendor-fs-squashfs vendor-img-containers vendor-gonetworkfs vendor-bundles
+        run: make vendor-gonetworkfs vendor-bundles
 
       # ---------------------------------------------------------------------------
       # Code signing

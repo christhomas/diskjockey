@@ -1,201 +1,93 @@
-#!/bin/bash
-# Build script for go-networkfs (vendored network filesystem drivers)
-# Called by both Xcode build phases and Makefile
+#!/bin/sh
 #
-# This script builds SEPARATE minimal libraries per driver:
-#   libftp.a - exports ftp_mount, ftp_stat, ftp_listdir...
-#   libsftp.a (future) - exports sftp_mount, sftp_stat...
+# build-gonetworkfs.sh — put the go-networkfs c-archives where the app links
+# them.
 #
-# This allows linking only needed drivers, keeping binary size small.
-
+# WHAT CHANGED, AND WHY THIS IS NOW SHORT
+#
+# This used to carry the build itself: 258 lines that knew Go's flags, the
+# driver list, the c-archive invocation and its own stamp-file staleness
+# scheme. All of that is knowledge about how to build go-networkfs, and it
+# belongs to go-networkfs — which now states it, in its own chores.yml, as
+# `chore archives` (build every driver plus the combined dispatcher) and
+# `chore artifact` (say where they landed). The same contract every sibling
+# Rust crate publishes.
+#
+# So this script no longer builds anything. It locates the source, asks it to
+# build, and copies what it points at. When the driver list or a Go flag
+# changes, it changes once, there, and every consumer follows.
+#
+# WHERE THE SOURCE COMES FROM
+#
+# A sibling checkout, not a vendored submodule. The submodule was a second
+# copy of a repository already on disk — 146 MB of it — and a checkout shared
+# with every other project that wants it is the point of the move. Override
+# with NETWORKFS_SRC when it lives somewhere else.
+#
+# Because the source is no longer pinned by a submodule gitlink, WHICH COMMIT
+# BUILT THESE ARCHIVES IS NO LONGER RECORDED BY GIT. The version manifest at
+# the end is therefore load-bearing rather than a nicety: it is the only
+# record of what went into the binary, and it marks a dirty tree.
 set -e
 
-# Configuration with defaults
 SRCROOT="${SRCROOT:-$(pwd)}"
 SRCROOT="$(cd "${SRCROOT}" && pwd)"
-NETWORKFS_SRC="${NETWORKFS_SRC:-${SRCROOT}/vendor/go-networkfs}"
+
+# Default to the sibling checkout beside this repository.
+NETWORKFS_SRC="${NETWORKFS_SRC:-${SRCROOT}/../go-networkfs}"
 NETWORKFS_OUT="${NETWORKFS_OUT:-${SRCROOT}/lib/go-networkfs}"
 case "$NETWORKFS_SRC" in /*) ;; *) NETWORKFS_SRC="${SRCROOT}/${NETWORKFS_SRC}" ;; esac
 case "$NETWORKFS_OUT" in /*) ;; *) NETWORKFS_OUT="${SRCROOT}/${NETWORKFS_OUT}" ;; esac
 
-# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-# Drivers to build (space-separated)
-DRIVERS="${DRIVERS:-ftp sftp smb dropbox webdav gdrive s3 onedrive}"
-
-# =============================================================================
-# Self-healing: Auto-initialize submodules
-# =============================================================================
+NC='\033[0m'
 
 if [ ! -f "${NETWORKFS_SRC}/go.mod" ]; then
-    echo "${YELLOW}go-networkfs submodule not found. Attempting to initialize...${NC}"
-    
-    if [ ! -d "${SRCROOT}/.git" ] && [ ! -f "${SRCROOT}/.git" ]; then
-        echo "${RED}ERROR: Not a git repository. Cannot auto-initialize submodules.${NC}"
-        exit 1
-    fi
-    
-    if [ -f "${SRCROOT}/.gitmodules" ]; then
-        echo "${YELLOW}Running: git submodule update --init --recursive${NC}"
-        cd "$SRCROOT"
-        git submodule update --init --recursive 2>/dev/null || \
-            git submodule update --init vendor/go-networkfs 2>/dev/null || true
-    fi
-    
-    if [ ! -f "${NETWORKFS_SRC}/go.mod" ]; then
-        echo "${RED}ERROR: go-networkfs submodule could not be initialized.${NC}"
-        echo "Manual fix: cd ${SRCROOT} && git submodule add https://github.com/christhomas/go-networkfs vendor/go-networkfs"
-        exit 1
-    fi
-    
-    echo "${GREEN}✓ go-networkfs submodule initialized${NC}"
-fi
-
-# =============================================================================
-# Self-healing: Check Go toolchain
-# =============================================================================
-
-if ! command -v go &> /dev/null; then
-    echo "${RED}ERROR: Go is not installed.${NC}"
-    echo "Install from: https://go.dev/dl/"
+    echo "${RED}ERROR: no go-networkfs at ${NETWORKFS_SRC}${NC}" >&2
+    echo "" >&2
+    echo "It is a sibling checkout now, not a submodule. Clone it beside this" >&2
+    echo "repository, or point NETWORKFS_SRC at an existing one:" >&2
+    echo "" >&2
+    echo "  git clone https://github.com/christhomas/go-networkfs $(dirname "${SRCROOT}")/go-networkfs" >&2
+    echo "  make vendor-gonetworkfs NETWORKFS_SRC=/path/to/go-networkfs" >&2
     exit 1
 fi
 
-# =============================================================================
-# Build individual driver libraries
-# =============================================================================
-
-# Create output directory
-mkdir -p "$NETWORKFS_OUT"
-
-cd "$NETWORKFS_SRC"
-
-# Check CGO is enabled
-if [ "${CGO_ENABLED:-}" = "0" ]; then
-    echo "${RED}ERROR: CGO_ENABLED=0. Set CGO_ENABLED=1 to build.${NC}"
+if ! command -v chore >/dev/null 2>&1; then
+    echo "${RED}ERROR: chore is not installed, and it owns the build now.${NC}" >&2
     exit 1
 fi
 
-BUILT_COUNT=0
-
-# Shared build flags (used for both per-driver and combined libs).
-#
-# GOWORK=off defensive — the project root has no go.work today, but
-# retain the flag so we aren't affected if a stray go.work appears in
-# a dev environment or submodule.
-#
-# -ldflags="-s -w" strips the symbol table + DWARF debug info from the
-# c-archive (unused at runtime; the final .appex linker dead-strip would
-# drop them anyway, but keeping them out of the .a halves on-disk size).
-# -trimpath removes absolute build paths from the binary. Set
-# DJ_GO_DEBUG=1 to keep symbols for local debugging.
-GO_LDFLAGS="-s -w"
-GO_EXTRA_FLAGS="-trimpath"
-if [ "${DJ_GO_DEBUG:-}" = "1" ]; then
-    GO_LDFLAGS=""
-    GO_EXTRA_FLAGS=""
-    echo "${YELLOW}(DJ_GO_DEBUG=1 — symbols + DWARF preserved)${NC}"
+if [ ! -f "${NETWORKFS_SRC}/chores.yml" ]; then
+    echo "${RED}ERROR: ${NETWORKFS_SRC} has no chores.yml${NC}" >&2
+    echo "That checkout predates the chore migration; update it." >&2
+    exit 1
 fi
 
-for DRIVER in $DRIVERS; do
-    STAMP_FILE="${NETWORKFS_OUT}/.${DRIVER}-stamp"
-    SOURCE_DIR="${NETWORKFS_SRC}/${DRIVER}/cmd/${DRIVER}"
-    
-    # Check if driver exists
-    if [ ! -d "$SOURCE_DIR" ]; then
-        echo "${YELLOW}Driver ${DRIVER} not found at ${SOURCE_DIR}, skipping...${NC}"
-        continue
-    fi
-    
-    # Check if rebuild needed
-    NEEDS_REBUILD=0
-    if [ ! -f "${NETWORKFS_OUT}/lib${DRIVER}.a" ]; then
-        NEEDS_REBUILD=1
-    elif [ -f "$STAMP_FILE" ]; then
-        # Check if source changed
-        NEWER=$(find "${NETWORKFS_SRC}/${DRIVER}" -name "*.go" -newer "$STAMP_FILE" 2>/dev/null | head -1)
-        if [ -n "$NEWER" ]; then
-            NEEDS_REBUILD=1
-        fi
-    else
-        NEEDS_REBUILD=1
-    fi
-    
-    if [ $NEEDS_REBUILD -eq 0 ]; then
-        echo "${GREEN}  lib${DRIVER}.a: Up to date${NC}"
-        continue
-    fi
-    
-    echo "${YELLOW}Building lib${DRIVER}.a...${NC}"
+printf "\n%bBuilding go-networkfs archives via chore%b\n" "${YELLOW}" "${NC}"
+echo "  source: ${NETWORKFS_SRC}"
 
-    CGO_ENABLED=1 GOOS=darwin GOWORK=off go build \
-        -buildmode=c-archive \
-        $GO_EXTRA_FLAGS \
-        -ldflags="$GO_LDFLAGS" \
-        -o "${NETWORKFS_OUT}/lib${DRIVER}.a" \
-        "./${DRIVER}/cmd/${DRIVER}"
-    
-    # Update stamp
-    touch "$STAMP_FILE"
-    BUILT_COUNT=$((BUILT_COUNT + 1))
-    
-    echo "${GREEN}  lib${DRIVER}.a: Built ($(du -h ${NETWORKFS_OUT}/lib${DRIVER}.a | cut -f1))${NC}"
-done
+# `chore archives` is idempotent — it fingerprints its own sources and says
+# "up to date" without rebuilding, which is what replaced the stamp files
+# this script used to keep.
+( cd "${NETWORKFS_SRC}" && chore archives )
 
-# =============================================================================
-# Build combined libnetworkfs.a (all drivers, dispatched by driver_type)
-# =============================================================================
-#
-# Unlike the per-driver archives, this one blank-imports every registered
-# driver and exposes a unified networkfs_* C API that picks the backend at
-# mount time. Set BUILD_COMBINED=0 to skip.
-
-BUILD_COMBINED="${BUILD_COMBINED:-1}"
-if [ "$BUILD_COMBINED" = "1" ]; then
-    COMBINED_SRC="${NETWORKFS_SRC}/cmd/networkfs"
-    COMBINED_OUT="${NETWORKFS_OUT}/libnetworkfs.a"
-    COMBINED_STAMP="${NETWORKFS_OUT}/.networkfs-stamp"
-
-    if [ ! -d "$COMBINED_SRC" ]; then
-        echo "${YELLOW}Combined dispatcher not found at ${COMBINED_SRC}, skipping...${NC}"
-    else
-        NEEDS_REBUILD=0
-        if [ ! -f "$COMBINED_OUT" ]; then
-            NEEDS_REBUILD=1
-        elif [ -f "$COMBINED_STAMP" ]; then
-            # Combined lib depends on every driver's Go source, not just cmd/networkfs
-            NEWER=$(find "${NETWORKFS_SRC}" -name "*.go" -newer "$COMBINED_STAMP" 2>/dev/null | head -1)
-            if [ -n "$NEWER" ]; then
-                NEEDS_REBUILD=1
-            fi
-        else
-            NEEDS_REBUILD=1
-        fi
-
-        if [ $NEEDS_REBUILD -eq 0 ]; then
-            echo "${GREEN}  libnetworkfs.a: Up to date${NC}"
-        else
-            echo "${YELLOW}Building libnetworkfs.a (combined)...${NC}"
-            CGO_ENABLED=1 GOOS=darwin GOWORK=off go build \
-                -buildmode=c-archive \
-                $GO_EXTRA_FLAGS \
-                -ldflags="$GO_LDFLAGS" \
-                -o "$COMBINED_OUT" \
-                ./cmd/networkfs
-            touch "$COMBINED_STAMP"
-            BUILT_COUNT=$((BUILT_COUNT + 1))
-            echo "${GREEN}  libnetworkfs.a: Built ($(du -h ${COMBINED_OUT} | cut -f1))${NC}"
-        fi
-    fi
+# Asked, not assumed: `artifact` is a value-returning task, and a consumer
+# that hardcoded `dist/` would break the moment that crate reorganised.
+DIST="$( cd "${NETWORKFS_SRC}" && chore artifact )"
+if [ ! -d "${DIST}" ]; then
+    echo "${RED}ERROR: chore artifact named ${DIST}, which is not a directory${NC}" >&2
+    exit 1
 fi
 
-# Emit VERSION manifest describing the submodule commit that was built.
-# One manifest per submodule (not per driver) so filename identifies the source
-# repo — NETWORKFS_OUT is shared across drivers.
+mkdir -p "${NETWORKFS_OUT}"
+# Copy the CONTENTS, not the directory — `artifact` prints a directory
+# precisely because there is more than one file to take.
+cp "${DIST}"/*.a "${DIST}"/*.h "${NETWORKFS_OUT}/"
+COPIED=$(ls -1 "${NETWORKFS_OUT}"/*.a 2>/dev/null | wc -l | tr -d ' ')
+
 emit_version_manifest() {
     local lib_name="$1"
     local src_dir="$2"
@@ -246,13 +138,10 @@ emit_version_manifest() {
     )
 }
 
+
 emit_version_manifest "go-networkfs" "${NETWORKFS_SRC}" "${NETWORKFS_OUT}/VERSION-go-networkfs.txt"
 
 echo ""
-echo "${GREEN}go-networkfs build complete (${BUILT_COUNT} archive(s) built)${NC}"
+printf "%bgo-networkfs ready (%s archive(s))%b\n" "${GREEN}" "${COPIED}" "${NC}"
 echo "  Output:   ${NETWORKFS_OUT}/"
-echo "  Drivers:  ${DRIVERS}"
-if [ "$BUILD_COMBINED" = "1" ]; then
-    echo "  Combined: libnetworkfs.a"
-fi
 echo "  Manifest: ${NETWORKFS_OUT}/VERSION-go-networkfs.txt"
