@@ -39,6 +39,20 @@
 # because a half-removed worktree leaves a registration that breaks the next
 # build with a confusing "already exists".
 #
+# WHEN THE CHECKOUT IS ON main, IT IS USED DIRECTLY — IF IT IS CLEAN
+#
+# A worktree exists to escape whatever branch someone is working on. If they
+# are on main with nothing modified, there is nothing to escape: the checkout
+# already IS the reference state, and using it reuses the chore fingerprint
+# cache, which is the difference between 0.01s and 8.7s.
+#
+# On main and NOT clean, the build STOPS. It does not fall back to a worktree
+# and it does not carry on: a dirty or half-merged main is a machine in a
+# state its owner did not intend, and no build system can work out what they
+# meant. Guessing here would either compile something nobody asked for or
+# silently ignore work in progress. The programmer is told what is wrong and
+# left to decide — that is the whole of the policy.
+#
 # USAGE
 #   sibling-build.sh <name> <src> <tag> <build-task> <artifact-task> <out>
 set -e
@@ -55,7 +69,66 @@ command -v chore >/dev/null 2>&1 || die "chore is not installed, and it owns the
 
 SRC="$(cd "$SRC" && pwd)"
 
-# The tag must exist locally. Fetching here would make the build depend on
+BRANCH="$( cd "$SRC" && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "" )"
+DIRTY="$( cd "$SRC" && git status --porcelain 2>/dev/null | head -20 )"
+MERGING=""
+if [ -f "$SRC/.git/MERGE_HEAD" ] || [ -d "$SRC/.git/rebase-merge" ] || [ -d "$SRC/.git/rebase-apply" ]; then
+    MERGING="yes"
+fi
+
+if [ "$BRANCH" = "main" ] && { [ -n "$DIRTY" ] || [ -n "$MERGING" ]; }; then
+    printf "\n%bERROR: %s is on main, but main is not clean.%b\n" "$RED" "$NAME" "$NC" >&2
+    echo "" >&2
+    echo "  $SRC" >&2
+    [ -n "$MERGING" ] && echo "  A merge or rebase is in progress." >&2
+    if [ -n "$DIRTY" ]; then
+        echo "" >&2
+        echo "$DIRTY" | sed 's/^/    /' >&2
+        n="$( cd "$SRC" && git status --porcelain | wc -l | tr -d " " )"
+        [ "$n" -gt 20 ] && echo "    ... and $(( n - 20 )) more" >&2
+    fi
+    echo "" >&2
+    echo "  main must be clean to continue." >&2
+    echo "" >&2
+    echo "  This is not something the build can decide for you. A dirty main is" >&2
+    echo "  a machine left in a state you did not intend, and guessing would" >&2
+    echo "  either compile something you did not ask for or quietly discard" >&2
+    echo "  work you meant to keep. Commit it, stash it, or finish the merge." >&2
+    exit 1
+fi
+
+# On main and clean: the checkout already is the reference state, so use it
+# and keep the fingerprint cache. Nothing to escape.
+if [ "$BRANCH" = "main" ] && [ -z "$DIRTY" ]; then
+    [ -f "$SRC/chores.yml" ] || die "$NAME has no chores.yml — it predates the chore migration"
+    printf "\n%bBuilding %s from its checkout (on main, clean)%b\n" "$YELLOW" "$NAME" "$NC"
+    echo "  source: $SRC"
+    ( cd "$SRC" && chore "$BUILD_TASK" ) || die "$NAME: chore $BUILD_TASK failed"
+    DIST="$( cd "$SRC" && chore "$ARTIFACT_TASK" )"
+    case "$DIST" in /*) ;; *) DIST="$SRC/$DIST" ;; esac
+    [ -d "$DIST" ] || die "$NAME: chore $ARTIFACT_TASK named '$DIST', which is not a directory"
+    mkdir -p "$OUT"
+    cp -R "$DIST"/. "$OUT/"
+    {
+        echo "lib=$NAME"
+        echo "source=$( cd "$SRC" && git config --get remote.origin.url 2>/dev/null || echo unknown )"
+        echo "ref=main"
+        echo "ref_type=branch"
+        echo "commit=$( cd "$SRC" && git rev-parse HEAD )"
+        echo "short_commit=$( cd "$SRC" && git rev-parse --short HEAD )"
+        echo "built_from=checkout"
+        echo "dirty=false"
+    } > "$OUT/VERSION-$NAME.txt"
+    printf "%b%s ready%b\n" "$GREEN" "$NAME" "$NC"
+    echo "  Output:   $OUT/"
+    echo "  Manifest: $OUT/VERSION-$NAME.txt"
+    exit 0
+fi
+
+# Not on main: build the pinned ref in a worktree, so the branch someone
+# happens to be working on cannot reach the app's binary.
+#
+# The ref must exist locally. Fetching here would make the build depend on
 # the network and on whatever upstream currently says, which is the opposite
 # of a pin.
 if ! ( cd "$SRC" && git rev-parse -q --verify "refs/tags/$TAG" >/dev/null ); then
