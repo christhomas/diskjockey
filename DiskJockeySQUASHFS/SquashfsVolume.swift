@@ -22,7 +22,6 @@ final class SquashfsVolume: FSVolume,
 
     /// Opaque pointer to the Rust bridge filesystem context.
     private var bridgeFS: OpaquePointer?
-    private let blockDevice: FSBlockDeviceResource
     /// Retained `BlockDeviceContext`; released in `deactivate()` after umount.
     private var contextPtr: UnsafeMutableRawPointer?
     private let bsdName: String
@@ -32,12 +31,10 @@ final class SquashfsVolume: FSVolume,
     init(volumeID: FSVolume.Identifier,
          volumeName: FSFileName,
          bridgeFS: OpaquePointer,
-         blockDevice: FSBlockDeviceResource,
          contextPtr: UnsafeMutableRawPointer,
          bsdName: String,
          stats: IOStatsCollector) {
         self.bridgeFS = bridgeFS
-        self.blockDevice = blockDevice
         self.contextPtr = contextPtr
         self.bsdName = bsdName
         self.stats = stats

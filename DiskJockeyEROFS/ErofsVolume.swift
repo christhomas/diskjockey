@@ -21,7 +21,6 @@ final class ErofsVolume: FSVolume,
                          FSVolume.PathConfOperations {
 
     private var bridgeFS: OpaquePointer?
-    private let blockDevice: FSBlockDeviceResource
     private var contextPtr: UnsafeMutableRawPointer?
     private let bsdName: String
     private let stats: IOStatsCollector
@@ -30,12 +29,10 @@ final class ErofsVolume: FSVolume,
     init(volumeID: FSVolume.Identifier,
          volumeName: FSFileName,
          bridgeFS: OpaquePointer,
-         blockDevice: FSBlockDeviceResource,
          contextPtr: UnsafeMutableRawPointer,
          bsdName: String,
          stats: IOStatsCollector) {
         self.bridgeFS = bridgeFS
-        self.blockDevice = blockDevice
         self.contextPtr = contextPtr
         self.bsdName = bsdName
         self.stats = stats
