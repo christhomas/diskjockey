@@ -14,6 +14,9 @@ EROFS_OUT := lib/fs_erofs
 # Builds per-driver static libs (libftp.a, …) and a combined libnetworkfs.a
 # dispatcher, all consumed by the FileProvider extension via cgo.
 NETWORKFS_SRC ?= ../go-networkfs
+# The tag to build, read from SIBLING_PINS.txt rather than repeated here, so
+# there is one place to change it.
+NETWORKFS_TAG := $(shell awk '$$1=="go-networkfs"{print $$2}' SIBLING_PINS.txt)
 NETWORKFS_OUT := lib/go-networkfs
 NETWORKFS_DRIVERS := ftp sftp smb dropbox webdav gdrive s3 onedrive
 
