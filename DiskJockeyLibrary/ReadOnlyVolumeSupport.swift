@@ -110,6 +110,15 @@ public enum ReadOnlyCapacity: Equatable, Sendable {
     /// Converting here rather than in the volume keeps the division in
     /// one testable place.
     case bytes(sectorSize: UInt64, total: UInt64, used: UInt64)
+
+    /// SquashFS: a compressed image, where used IS total.
+    ///
+    /// The image is exactly as large as its contents and cannot grow, so
+    /// there is no capacity figure distinct from usage and no free space
+    /// to report. Modelled as its own case rather than passed as
+    /// `.bytes(total: used, used: used)` because that spelling reads as
+    /// a coincidence rather than as the format's nature.
+    case compressedImage(blockSize: UInt64, usedBytes: UInt64)
 }
 
 /// Everything a read-only volume needs in order to answer `statfs`.
@@ -148,13 +157,19 @@ public struct ReadOnlyVolumeCapabilities: Equatable, Sendable {
     public var hasJournal: Bool
     public var supportsSymbolicLinks: Bool
     public var isCaseSensitive: Bool
+    /// SquashFS says false here and the others say true. Kept as a
+    /// parameter rather than normalised, because the flag describes what
+    /// the format's identifiers are, not a preference.
+    public var supports64BitObjectIDs: Bool
 
     public init(hasJournal: Bool,
                 supportsSymbolicLinks: Bool = true,
-                isCaseSensitive: Bool = true) {
+                isCaseSensitive: Bool = true,
+                supports64BitObjectIDs: Bool = true) {
         self.hasJournal = hasJournal
         self.supportsSymbolicLinks = supportsSymbolicLinks
         self.isCaseSensitive = isCaseSensitive
+        self.supports64BitObjectIDs = supports64BitObjectIDs
     }
 
     /// The FSKit object, with the invariant parts filled in.
@@ -171,7 +186,7 @@ public struct ReadOnlyVolumeCapabilities: Equatable, Sendable {
         caps.supportsActiveJournal = false
         caps.supportsSparseFiles = true
         caps.supports2TBFiles = true
-        caps.supports64BitObjectIDs = true
+        caps.supports64BitObjectIDs = supports64BitObjectIDs
         caps.caseFormat = isCaseSensitive ? .sensitive : .insensitive
         return caps
     }
@@ -254,6 +269,18 @@ public enum ReadOnlyVolumeSupport {
             // corrupt, and an unsigned wrap would report an enormous
             // amount of free space on a full disk.
             result.freeBlocks = totalSectors >= usedSectors ? totalSectors - usedSectors : 0
+
+        case let .compressedImage(blockSize, usedBytes):
+            result.blockSize = Int(blockSize)
+            guard blockSize > 0 else {
+                result.totalBlocks = 0
+                result.freeBlocks = 0
+                break
+            }
+            // Used is total: the image is exactly as large as it needs
+            // to be and cannot grow.
+            result.totalBlocks = usedBytes / blockSize
+            result.freeBlocks = 0
         }
 
         // Zero for every one of these volumes, whatever is free. They are

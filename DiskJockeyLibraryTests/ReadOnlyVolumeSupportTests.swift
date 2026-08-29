@@ -96,6 +96,32 @@ struct ReadOnlyStatFSTests {
         #expect(r.availableBlocks == 0)
     }
 
+    /// A compressed image is exactly as large as its contents, so used
+    /// is total and nothing is free. 40 KiB used with 4 KiB blocks is
+    /// ten blocks, all of them occupied.
+    @Test func aCompressedImageReportsUsedAsTotalAndNothingFree() {
+        let info = ReadOnlyVolumeInfo(
+            capacity: .compressedImage(blockSize: 4096, usedBytes: 40960),
+            ioSize: 4096,
+            totalInodes: 12)
+        let r = ReadOnlyVolumeSupport.statFS(info, fileSystemTypeName: "squashfs")
+
+        #expect(r.blockSize == 4096)
+        #expect(r.totalBlocks == 10)
+        #expect(r.freeBlocks == 0)
+        #expect(r.availableBlocks == 0)
+        #expect(r.totalFiles == 12)
+    }
+
+    @Test func aCompressedImageWithNoBlockSizeDoesNotDivide() {
+        let info = ReadOnlyVolumeInfo(
+            capacity: .compressedImage(blockSize: 0, usedBytes: 999),
+            ioSize: 0)
+        let r = ReadOnlyVolumeSupport.statFS(info, fileSystemTypeName: "squashfs")
+        #expect(r.totalBlocks == 0)
+        #expect(r.freeBlocks == 0)
+    }
+
     /// A filesystem with no fixed inode table has no count to give.
     /// Zero is the honest answer; a figure derived from the byte
     /// totals would be one a user could act on wrongly.
@@ -145,8 +171,17 @@ struct ReadOnlyCapabilityTests {
         let caps = ReadOnlyVolumeCapabilities(hasJournal: true).fsCapabilities
         #expect(caps.supportsPersistentObjectIDs == true)
         #expect(caps.supportsHardLinks == false)
-        #expect(caps.supports64BitObjectIDs == true,
-                "all four drivers use 64-bit identifiers")
+        #expect(caps.supports64BitObjectIDs == true)
+    }
+
+    /// SquashFS advertises 32-bit identifiers where the others
+    /// advertise 64-bit. It is a statement about the format, so it is a
+    /// parameter rather than a value normalised to the majority.
+    @Test func objectIDWidthIsAParameter() {
+        #expect(ReadOnlyVolumeCapabilities(hasJournal: false)
+            .fsCapabilities.supports64BitObjectIDs == true)
+        #expect(ReadOnlyVolumeCapabilities(hasJournal: false, supports64BitObjectIDs: false)
+            .fsCapabilities.supports64BitObjectIDs == false)
     }
 
     @Test func caseSensitivityAndSymlinksAreParameters() {
