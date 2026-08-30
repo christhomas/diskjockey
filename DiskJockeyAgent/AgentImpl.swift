@@ -77,15 +77,16 @@ final class AgentImpl: NSObject, DJAgentProtocol {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
         proc.arguments = ["attach", "-nomount", "-plist", path]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = Pipe()
-        do { try proc.run() } catch { return .failure(error.localizedDescription) }
-        proc.waitUntilExit()
-        guard proc.terminationStatus == 0 else {
-            return .failure("hdiutil attach exited with status \(proc.terminationStatus)")
+        // Waiting before reading deadlocks once the child fills the
+        // ~64 KiB a pipe holds, and stderr was a `Pipe()` nothing read,
+        // which blocks the child just as surely. Both are drained
+        // concurrently, and the wait comes after.
+        let result: ProcessRunner.Output
+        do { result = try ProcessRunner.run(proc) } catch { return .failure(error.localizedDescription) }
+        guard result.status == 0 else {
+            return .failure("hdiutil attach exited with status \(result.status)")
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let data = result.stdout
         var fmt = PropertyListSerialization.PropertyListFormat.xml
         guard let plist = try? PropertyListSerialization.propertyList(
             from: data, options: [], format: &fmt) as? [String: Any],
@@ -101,14 +102,14 @@ final class AgentImpl: NSObject, DJAgentProtocol {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
         proc.arguments = ["info", "-plist"]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = Pipe()
-        guard (try? proc.run()) != nil else { return nil }
-        proc.waitUntilExit()
-        guard proc.terminationStatus == 0 else { return nil }
+        // `hdiutil info -plist` lists EVERY attached image on the
+        // machine. That passes the ~64 KiB a pipe holds on any
+        // developer's laptop, and waiting for the child before reading
+        // it is the deadlock: the child cannot exit until its output is
+        // read, and this side would not read until it exited.
+        guard let result = try? ProcessRunner.run(proc), result.status == 0 else { return nil }
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let data = result.stdout
         var fmt = PropertyListSerialization.PropertyListFormat.xml
         guard let plist = try? PropertyListSerialization.propertyList(
             from: data, options: [], format: &fmt) as? [String: Any],
@@ -135,10 +136,10 @@ final class AgentImpl: NSObject, DJAgentProtocol {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
         proc.arguments = ["detach", "-force", bsdName]
-        proc.standardOutput = Pipe()
-        proc.standardError = Pipe()
-        try? proc.run()
-        proc.waitUntilExit()
+        // The output is not wanted, which is not the same as attaching
+        // pipes and ignoring them: an unread pipe fills and blocks the
+        // child. /dev/null has no buffer to fill.
+        _ = try? ProcessRunner.runDiscardingOutput(proc)
     }
 
     /// A BSD disk name, and nothing else.
@@ -164,19 +165,20 @@ final class AgentImpl: NSObject, DJAgentProtocol {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
         proc.arguments = ["detach", bsdName]
-        proc.standardOutput = Pipe()
-        proc.standardError = Pipe()
+        // Only the exit status is wanted. Sending both streams to
+        // /dev/null is what makes that safe — an unread `Pipe()` fills
+        // and blocks the child before it can exit.
+        let status: Int32
         do {
-            try proc.run()
-            proc.waitUntilExit()
+            status = try ProcessRunner.runDiscardingOutput(proc)
         } catch {
             reply(false, error.localizedDescription)
             return
         }
-        if proc.terminationStatus == 0 {
+        if status == 0 {
             reply(true, nil)
         } else {
-            reply(false, "hdiutil detach exited with status \(proc.terminationStatus)")
+            reply(false, "hdiutil detach exited with status \(status)")
         }
     }
 
@@ -217,25 +219,21 @@ final class AgentImpl: NSObject, DJAgentProtocol {
         let proc = Process()
         proc.executableURL = diskprobeURL
         proc.arguments = [path]
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        proc.standardOutput = outPipe
-        proc.standardError = errPipe
+        // diskprobe emits a JSON description of a whole disk, which is
+        // past the ~64 KiB a pipe holds for anything with many
+        // partitions. Waiting before reading is the deadlock.
+        let result: ProcessRunner.Output
         do {
-            try proc.run()
-            proc.waitUntilExit()
+            result = try ProcessRunner.run(proc)
         } catch {
             reply(nil, error.localizedDescription)
             return
         }
-        guard proc.terminationStatus == 0 else {
-            let errMsg = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(),
-                               encoding: .utf8) ?? ""
-            reply(nil, "diskprobe exited \(proc.terminationStatus): \(errMsg)")
+        guard result.status == 0 else {
+            reply(nil, "diskprobe exited \(result.status): \(result.stderrText)")
             return
         }
-        let json = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
-        reply(json, nil)
+        reply(result.stdoutText, nil)
     }
 
     private static func locateDiskprobe() -> URL? {

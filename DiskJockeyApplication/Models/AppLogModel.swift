@@ -9,11 +9,6 @@ public struct AppLogMessage: Identifiable {
     public let timestamp: Date
 }
 
-public protocol AppLogger: AnyObject {
-    func log(_ msg: String, category: String)
-    func log(_ msg: String)
-}
-
 /// Thin view-model over `LogRepository`. Republishes a *filtered* view
 /// of the repository's logs to SwiftUI: entries whose `scope` is in
 /// `suppressedScopes` are dropped on the way to `messages`. The full

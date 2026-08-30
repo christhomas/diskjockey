@@ -18,7 +18,6 @@ public final class AppContainer: ObservableObject {
     /// Structured app-level log surface (AppLog wraps writes to the
     /// shared ndjson file so our own lines appear in the same feed).
     public let appLogModel: AppLogModel
-    public var appLogger: AppLogger { appLogModel as! AppLogger }
 
     /// Owns the security-scoped bookmark the user approves on first
     /// direct-mount creation — grants the sandboxed host app access

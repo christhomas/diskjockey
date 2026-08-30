@@ -26,13 +26,14 @@ public enum MountTableParser {
     public static func enumerate(fsTypesOfInterest: Set<String>) -> [AttachedDisk] {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/sbin/mount")
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = Pipe()
-        do { try proc.run() } catch { return [] }
-        proc.waitUntilExit()
-        guard let data = try? pipe.fileHandleForReading.readToEnd(),
-              let text = String(data: data, encoding: .utf8) else { return [] }
+        // Reading stdout before waiting was half the fix: stderr was
+        // still an unread `Pipe()`, and a child blocked writing to a
+        // full stderr never closes stdout, so the read that was meant
+        // to prevent the deadlock blocks instead. The runner drains
+        // both, concurrently.
+        guard let result = try? ProcessRunner.run(proc) else { return [] }
+        let text = result.stdoutText
+        guard !text.isEmpty else { return [] }
 
         var results: [AttachedDisk] = []
         for line in text.split(separator: "\n") {
@@ -142,9 +143,11 @@ public enum MountTableParser {
             p.standardError = pipe
             do {
                 try p.run()
+                // Read before waiting — see `enumerate`.
+                let outData = try? pipe.fileHandleForReading.readToEnd()
                 p.waitUntilExit()
                 let rc = p.terminationStatus
-                let out = (try? pipe.fileHandleForReading.readToEnd())
+                let out = outData
                     .flatMap { String(data: $0, encoding: .utf8) }?
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 if rc == 0 {
