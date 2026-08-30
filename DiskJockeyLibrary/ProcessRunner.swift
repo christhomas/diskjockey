@@ -34,10 +34,11 @@ import Foundation
 /// to both — a progress stream on one and warnings on the other — hits
 /// it, and which of the two fills first depends on the machine.
 ///
-/// So both streams are drained **concurrently**, on their own queues,
-/// and `waitUntilExit()` runs only once both have reached EOF. EOF
-/// arrives when the child closes its end, which it does on exit, so no
-/// ordering here can block.
+/// So both streams are drained **concurrently** — stderr on a private
+/// queue, stdout on the calling thread, which is already committed to
+/// waiting — and `waitUntilExit()` runs only once both have reached
+/// EOF. EOF arrives when the child closes its end, which it does on
+/// exit, so no ordering here can block.
 ///
 /// # A stream nobody wants still needs a destination
 ///
@@ -90,21 +91,24 @@ public enum ProcessRunner {
 
         try proc.run()
 
-        // Both readers start before either finishes. Draining them in
-        // sequence would let a full stderr block the child while this
-        // side is still reading stdout — the same deadlock, one stream
-        // over.
-        var outData = Data()
+        // Both readers are live before either finishes. Draining them
+        // in sequence would let a full stderr block the child while
+        // this side is still reading stdout — the same deadlock, one
+        // stream over.
+        //
+        // Only stderr is handed to another thread; stdout is read on
+        // the caller's, which is already committed to waiting. Two
+        // background readers would work equally well and cost one more
+        // blocked thread per concurrent call — enough to matter when
+        // several run at once, which is how the first version of this
+        // stalled a CI machine.
         var errData = Data()
         let group = DispatchGroup()
-        let queue = DispatchQueue(label: "diskjockey.process-runner", attributes: .concurrent)
-
-        queue.async(group: group) {
-            outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        }
+        let queue = DispatchQueue(label: "diskjockey.process-runner")
         queue.async(group: group) {
             errData = errPipe.fileHandleForReading.readDataToEndOfFile()
         }
+        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
         group.wait()
 
         // Safe now: both pipes are at EOF, so nothing the child does can

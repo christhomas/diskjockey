@@ -275,9 +275,22 @@ description of a whole disk — both were called with the wait first.
 Six tests, each with a watchdog, because the failure under test is a **hang**
 rather than a wrong answer: without a deadline a regression stops the suite
 instead of failing it, and a stalled run reads as a slow machine. Two flood
-512 KiB down both streams at once. Mutation-checked — restoring the sequential
-drain fails the both-streams test at its 20-second deadline, and swapping
-`nullDevice` for an unread `Pipe()` fails the discard test the same way.
+256 KiB down both streams at once. Mutation-checked — restoring the sequential
+drain fails the both-streams test at its deadline, and swapping `nullDevice` for
+an unread `Pipe()` fails the discard test the same way.
+
+**CI then taught the tests two things it took a red build to see.** Run in
+parallel with the rest of the bundle they starved neighbouring tests asserting on
+50-millisecond deadlines, so the build failed on `DetachedOperationWatchdog`
+rather than on anything here; the suite is `.serialized` now. And the watchdog ran
+its work on the global queue, where it could itself be starved of a thread — all
+three flood tests reported the *same* 64 seconds, which is what a starved pool
+looks like, not a deadlock. It uses a dedicated `Thread`.
+
+That fed back into the helper. Draining both pipes on background threads while
+blocking the caller's meant three threads per concurrent call. Only stderr goes to
+another thread now; stdout is read on the calling thread, which was already
+committed to waiting — the same guarantee for one blocked thread instead of two.
 
 **Also in diskjockey.** `A1` — `AppContainer` exposed:
 

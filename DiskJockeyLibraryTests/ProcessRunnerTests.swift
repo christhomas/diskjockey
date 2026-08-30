@@ -10,26 +10,38 @@ import Testing
 /// is a **hang**, not a wrong answer. Without one, a regression does not
 /// fail the suite — it stops it, and a stalled test run reads as a slow
 /// machine rather than a bug.
-@Suite("ProcessRunner")
+///
+/// The suite is `.serialized` because its tests spawn subprocesses and
+/// block threads waiting on them. Run in parallel with each other and
+/// with the rest of the bundle, they starved neighbouring tests that
+/// assert on 50-millisecond deadlines, and CI failed on *those* rather
+/// than on anything here.
+@Suite("ProcessRunner", .serialized)
 struct ProcessRunnerTests {
 
     /// Comfortably past the ~64 KiB pipe buffer, small enough to stay
     /// fast. A child writing this much blocks unless something drains
     /// it.
-    private static let floodBytes = 512 * 1024
+    private static let floodBytes = 256 * 1024
 
     /// Run `body` on a background thread and fail if it does not finish.
     ///
     /// `Process` deadlocks do not throw and do not time out on their
     /// own, so the assertion has to come from outside.
+    ///
+    /// The work runs on a dedicated `Thread`, not the global queue. A
+    /// deadline that can itself be starved of a thread reports a
+    /// timeout for a test that was never given a chance to run — which
+    /// is exactly what happened on CI, where all three of these
+    /// reported the same 64 seconds.
     private func withDeadline<T: Sendable>(
-        seconds: Double = 20,
+        seconds: Double = 30,
         _ label: String,
         _ body: @escaping @Sendable () -> T
     ) -> T? {
         let box = LockedBox<T>()
         let done = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
+        Thread.detachNewThread {
             box.value = body()
             done.signal()
         }

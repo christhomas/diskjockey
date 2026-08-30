@@ -32,7 +32,8 @@ import Foundation
 /// Reading first fixes one pipe. Reading two pipes one after the other
 /// does not: if the child fills the second while this side is blocked on
 /// the first, the standoff happens one stream over. So both are drained
-/// concurrently and the wait comes last.
+/// concurrently — stderr on a private queue, stdout on the calling
+/// thread — and the wait comes last.
 ///
 /// A stream nobody wants still needs a destination that cannot fill,
 /// which is what `runDiscardingOutput` uses `/dev/null` for. An unread
@@ -62,16 +63,17 @@ enum ProcessRunner {
 
         try proc.run()
 
-        var outData = Data()
+        // Only stderr goes to another thread; stdout is read on the
+        // caller's, which is already committed to waiting. Two
+        // background readers cost one more blocked thread per
+        // concurrent call for no extra safety.
         var errData = Data()
         let group = DispatchGroup()
-        let queue = DispatchQueue(label: "diskjockey.agent.process-runner", attributes: .concurrent)
-        queue.async(group: group) {
-            outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        }
+        let queue = DispatchQueue(label: "diskjockey.agent.process-runner")
         queue.async(group: group) {
             errData = errPipe.fileHandleForReading.readDataToEndOfFile()
         }
+        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
         group.wait()
 
         // Safe now: both pipes are at EOF, so nothing the child does can

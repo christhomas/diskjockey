@@ -69,12 +69,31 @@ on the machine, and `diskprobe` emits a JSON description of a whole disk; both
 were called with the wait first.
 
 Six tests cover it, each with a watchdog, because the failure under test is a
-**hang** rather than a wrong answer — without a deadline a regression stops the
+**hang** rather than a wrong answer: without a deadline a regression stops the
 suite instead of failing it, and a stalled run reads as a slow machine. Two of
-them flood 512 KiB down both streams at once. Mutation-checked: reverting to the
+them flood 256 KiB down both streams at once. Mutation-checked — reverting to the
 sequential drain fails `a child that floods both streams does not deadlock` at
-the 20-second deadline, and swapping `nullDevice` for an unread `Pipe()` fails
+its deadline, and swapping `nullDevice` for an unread `Pipe()` fails
 `output can be discarded without blocking the child` the same way.
+
+**Two things about the tests came from CI failing, not from writing them.**
+
+The suite is `.serialized`. Run in parallel with the rest of the bundle, these
+tests spawn subprocesses and block threads waiting on them, and they starved
+neighbouring tests that assert on 50-millisecond deadlines — so CI failed on
+`DetachedOperationWatchdog` rather than on anything here.
+
+And the watchdog itself runs its work on a dedicated `Thread` rather than the
+global queue. A deadline that can be starved of a thread reports a timeout for a
+test that was never given a chance to run: on CI all three flood tests reported
+the *same* 64 seconds, which is what a starved pool looks like and not what a
+deadlock looks like.
+
+That fed back into `ProcessRunner` itself. It drained both pipes on background
+threads and blocked the caller's, so every concurrent call held three. Only
+stderr goes to another thread now; stdout is read on the calling thread, which
+was already committed to waiting. Same guarantee, one blocked thread per call
+instead of two.
 
 ### A1 — a protocol and a force-cast that existed only to trap each other — **fixed**
 
@@ -125,6 +144,8 @@ with locations and coverage notes.
 
 ## Verification
 
-51 tests pass, unchanged in number. The pipe-draining change has no unit test —
-it needs a child that overflows the buffer, which is an integration concern; the
-reasoning is recorded at each site instead.
+51 XCTest cases pass, unchanged in number, plus six new swift-testing cases for
+`ProcessRunner` — the first coverage the pipe-draining behaviour has had. The
+earlier round recorded the reasoning at each site and called a test an
+integration concern; a child that floods a pipe turns out to be four lines of
+`/bin/sh`.
