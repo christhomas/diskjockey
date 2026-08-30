@@ -16,7 +16,8 @@ The full 715-finding index is at
 4. [Toolchain, volumes, mkfs and branches](#4-other-structural-work)
 5. [The human-code sweep, repository by repository](#5-the-human-code-sweep)
 6. [Waiting on you](#6-waiting-on-you)
-7. [Housekeeping and corrections](#7-housekeeping-and-corrections)
+7. [The second wave](#7-the-second-wave)
+8. [Housekeeping and corrections](#8-housekeeping-and-corrections)
 
 ---
 
@@ -588,7 +589,8 @@ submodules that git refuses to remove; it needs a manual `rm -rf`.
 ## 5. The human-code sweep
 
 All fifteen repositories assessed for their **High and Medium** findings — 501
-of the 715. **61 items fixed**, one PR per repository, all currently open:
+of the 715. **61 items fixed** in the first pass, one PR per repository. All
+fifteen are merged.
 
 | Repo | PR | Repo | PR |
 |---|---|---|---|
@@ -600,6 +602,24 @@ of the 715. **61 items fixed**, one PR per repository, all currently open:
 | rust-fs-ext4 | [#50](https://github.com/christhomas/rust-fs-ext4/pull/50) | rust-img-vhd | [#26](https://github.com/antimatter-studios/rust-img-vhd/pull/26) |
 | rust-fs-erofs | [#26](https://github.com/antimatter-studios/rust-fs-erofs/pull/26) | rust-img-vhdx | [#27](https://github.com/antimatter-studios/rust-img-vhdx/pull/27) |
 | | | rust-img-vmdk | [#26](https://github.com/antimatter-studios/rust-img-vmdk/pull/26) |
+
+**Two things went wrong across that merge, both worth knowing.**
+
+*Every dependent's lock had moved past its workflow's pin.* The family was
+released while these branches were open, so each `Cargo.lock` resolved
+`am-fs-core 0.2.3` while every workflow still cloned `v0.2.2`. CI clones the
+sibling at the pinned tag and builds with `--locked`, so it stopped before
+compiling anything — eleven repositories, one line each:
+
+```
+error: cannot update the lock file … because --locked was passed to prevent this
+```
+
+*Three new tests used `std::os::unix::fs::FileExt`.* `write_all_at` and
+`read_exact_at` do not exist on the Windows runner CI also uses. In qcow2 and
+vhdx the `WriteAt` trait in `tests/common` **already was** the portable
+seek-then-write helper — the Unix import shadowed it. qcow2 gained the reading
+half for the same reason.
 
 ### 5.1 Documentation that described a different program
 
@@ -819,20 +839,15 @@ Both worth deciding soon.
 
 ### 6.6 The single next item, per repository
 
-Where a repo has one finding that should come before the others:
+Where a repo has one finding that should come before the others. Six of the
+original rows are gone because they were done — §7 has them.
 
 | Repo | Next | Why |
 |---|---|---|
 | **ext4** | X1 | Nine hand-written copies of the one checksum tail that *has* a helper — the checksum a wrong write corrupts silently. The report's own follow-up says it is larger than first stated. |
-| **ext4** | D3 | "Atomic" rename that is not atomic on the overwrite path. Unlike D2 this is **not stale — it is wrong**, and it is the property callers most rely on. |
-| **ntfs** | B3/B4 | One 164-line function writes its `free_all` rollback out **ten times** and is currently correct; another four hundred lines away omits it entirely and leaves a torn rename. Neither is a named idiom, so the divergence is invisible — the same shape as the `".."` bug. |
-| **ntfs** | C1 | `fs_ntfs_write_file` and `fs_ntfs_write_file_contents` treat `len == 0` **oppositely**. A caller cannot be right about both. |
-| **xfs** | H5 | One of three copies of btree node parsing **silently omits an identity check**. Three parsers where one validates less is a bug with a delay on it. |
 | **xfs** | M18 | `truncate` and `truncate_to_zero` have opposite argument orders — the pair most likely to be called wrongly. |
 | **erofs** | M6 | Compacted-pack geometry in **four encodings, one of which is correct**. A bug waiting for someone to reach for the wrong one. |
 | **erofs** | M22 | 117 inline hex slice ranges with no named-offset convention at all. The largest, and it would change how the whole crate reads. |
-| **btrfs** | H5 | `insert`'s refusal message contradicts the `split` function fifty lines below it, so one of the two is wrong about when a split happens. |
-| **blk-probe** | M4 | Short reads treated as end-of-file — the same class as the squashfs gzip bug, where a truncated input was served as complete. |
 | **vhd** | M3 | The sector-bitmap arithmetic written twice **with opposite bounds discipline**. Two copies disagreeing about bounds checking is how one ends up wrong. |
 | **partitions** | M5 | `SECTOR_SIZE` defined three times and then ignored eight — most likely to end in a real disagreement. |
 | **vhdx** | M5 | A comment that contradicts itself about data-sector placement. **Resolving it needs the spec**, not a rewording. |
@@ -872,7 +887,261 @@ different deliverables, and steps 1 and 2 produce the library either way.
 
 ---
 
-## 7. Housekeeping and corrections
+## 7. The second wave
+
+Once the fifteen sweep PRs merged, the items §6.6 had named as "next" were taken
+in order of consequence rather than of effort. Six of them, plus the mkfs step
+the superblock writer had been waiting on.
+
+### 7.1 rust-fs-ntfs — a rename that could tear
+
+**B4, High.** A variable-length rename is two record writes with no journal
+between them: swap the parent's `$INDEX_ROOT` entry, then rewrite the file's own
+`$FILE_NAME`. Each `update_mft_record_io` is durable on its own, so **a failure
+at step 2 left step 1 standing** — the directory naming the new basename while
+the file's `$FILE_NAME` still read the old one.
+
+Neither record is malformed. Only their agreement is broken, which is why this
+crate would never have noticed it itself and chkdsk would.
+
+The bytes to undo step 1 were already in hand: `parent_record_bytes` is read a
+few lines above and nothing writes to the parent in between. Step 2's failure
+restores them and returns the original error. If the rollback fails too, the
+volume genuinely *is* torn and no further write here can be trusted to fix it, so
+the error says what is on disk rather than reporting only the first failure.
+
+`restore_mft_record_io` is the named idiom now, in `mft_io.rs` beside the
+primitive it undoes, and its doc says what it is **not**: a record whose previous
+bytes the caller still holds, not a general undo, no help once a second record is
+committed too. That naming is half the fix — B3 and B7 are two more rollback
+shapes written out by hand, both correct today, and the reason this site could
+omit one is that none of them had a name to be missing from.
+
+Three tests, over a `BlockIo` that refuses writes to a single MFT record — the
+only way to fail step 2 without failing the operation earlier. Mutation-checked:
+removing the rollback fails on `the old name must be back in the directory
+index`.
+
+### 7.2 rust-fs-ntfs — `len == 0` meaning two opposite things
+
+**C1, High.** Two adjacent C-ABI entry points, near-identical arguments, both
+opening with `if len == 0`:
+
+| | `len == 0` |
+|---|---|
+| `fs_ntfs_write_file` | returns 0 and does nothing — **without opening the image or resolving the path** |
+| `fs_ntfs_write_file_contents` | passes `&[]` through, which **empties the file** |
+
+Both are right. "Rewrite this range" with an empty range is a no-op; "write this
+as the entire contents" with nothing is `open(O_TRUNC)`. Neither is inferable
+from the signature, and they sit side by side with guards that look identical, so
+a caller cannot be right about both.
+
+The no-op is the **library's** policy at three levels, not a shortcut in the
+wrapper — `write_at` and `write_at_io` both return `Ok(0)` before resolving
+anything, so a caller chunking a buffer pays nothing for an empty tail. Changing
+that is a behaviour change on a published ABI with no reported harm behind it, so
+it stays your decision. What was clearly fixable is that neither behaviour was
+written down.
+
+Both now state it, in the Rust doc *and* in `fs_ntfs.h`, each pointing at the
+other. Three tests pin the pair, including the zero-length write to a path that
+does not exist contrasted with the one-byte write to the same path that fails.
+They format their own image rather than using `test-disks/`, which needs `mkntfs`
+and so only exists on CI.
+
+### 7.3 rust-fs-ext4 — where a rename stops being atomic
+
+**D3, High.** The doc promised `replace_if_exists = true` "atomically overwrites
+dst", and the body comment said the overwrite is staged "into a single buffer so
+a crash either fully replaces dst or leaves the FS in its prior state". True on
+the common path, false on one branch:
+
+```rust
+if dst_extends {
+    self.commit_block_buffer(buf)?;                 // dst's entry is already gone
+    self.extend_dir_and_add_entry(dst_parent_ino, …)?;   // NOT journaled
+}
+```
+
+When the destination directory has no room, the buffer is committed early and the
+un-journaled extend runs after it. On the overwrite path that early commit has
+already removed dst's directory entry — so a crash in the window leaves **dst's
+name gone and src still present**: the file that was at dst is unreachable and
+nothing has moved.
+
+The doc now names the branch, both windows and what closing them would take
+(`extend_dir_and_add_entry` staging into the buffer instead of writing on its
+own), and states the guarantee the code actually offers: **atomic unless the
+destination directory has to grow.** Making it unconditional is a change to the
+directory-growth path and a decision about the journal layer, not a correction.
+
+**The finding's second half was a live hazard.** Each `i_links_count` patch read
+its parent inode back from disk and staged a write of the whole record. Two
+patches naming the same inode in one buffer would have had the second read the
+pre-buffer bytes and overwrite the first — prevented only by two branch
+conditions three hundred lines apart happening to be mutually exclusive, which
+nothing stated and nothing enforced:
+
+```rust
+// Dest parent: only bump if NOT replacing a dir (which
+// would offset the bump). …
+if !dst_is_dir { … }
+```
+
+Deltas are accumulated and applied once now. Every parent is read exactly once
+after every delta is known, written exactly once, and **a net-zero delta writes
+nothing** — so the dir-replaces-dir case is arithmetic that cancels rather than a
+suppression that has to know about its counterpart.
+
+Four tests, covering cases that had none, including the cross-parent directory
+replace where two deltas name one inode. **They pass against the old code too**,
+which is the point: behaviour is unchanged, the cases were uncovered, and the
+invariant was one edit away from being false.
+
+### 7.4 rust-fs-xfs — the block-map tree checked less than its siblings
+
+**H5, High.** `alloc_btree::parse_block` and `inode_btree::parse_block` both
+verify a v5 block's self-recorded address. `bmbt::parse_block` did not — its
+offsets module had no `BLKNO` constant, and `grep -in 'blkno' src/bmbt.rs`
+returned nothing at all.
+
+That left it weakest against exactly what the check is for. A pointer corrupted
+into another valid block **of the same file** passes the CRC (a real block), the
+owner check (same inode) and the level check (same depth). Its recorded address
+is the only field that separates them.
+
+`bb_blkno` sits at 24 in the long form, by the same +8 shift that puts `UUID` at
+40 rather than 32 — the long form carries 64-bit sibling pointers. It holds a
+**basic-block address**, 512-byte units, not a filesystem block number, so the
+conversion moved into `alloc_btree::blkno_of_fsblock` and `expected_blkno` calls
+it. Two callers, one conversion, neither able to be right while the other is
+wrong.
+
+The test hands the walk a leaf correct in every other respect — right inode,
+right level, valid checksum — read at the wrong block, then reads the same block
+where it belongs so a pass cannot come from some other refusal. A second test
+pins the unit, because stamping the fsblock as-is would hide on 512-byte blocks
+and fire on every real geometry.
+
+**Every existing fixture had to start stamping its address**, which is its own
+evidence: none of them recorded one, so none was a block the reader should have
+been accepting.
+
+### 7.5 rust-fs-btrfs — a refusal that told callers to give up
+
+**H5, High.** `insert` refused an over-large item with *"Splitting a leaf is not
+implemented — where the kernel puts the boundary is a policy this has not
+measured."*
+
+Both halves false. `leaf_edit::split` is **fifty lines below**, with
+`tests/split_oracle.rs` checking it against leaves the kernel really split;
+`insert_or_split` is thirty lines further on and does exactly what a caller
+hitting the message wants. The module doc directly above prints three *measured*
+splits, and `docs/cow-transaction.md` has a section on the measurement and on why
+the boundary is deliberately not copied.
+
+The house style is what made this expensive: the messages are long and specific
+so a caller knows what to do next, and this one used that whole apparatus to tell
+them to give up on something forty lines away. It names `insert_or_split` now,
+and says why `insert` itself refuses — a caller who meant to write exactly one
+block should find out rather than silently get two.
+
+`tree_write::build_leaf` carried the milder version **inside one function**: its
+doc says splitting is "the caller's decision, not this function's" while its
+error said it "is not implemented".
+
+**Three tests were pinning the false sentence**, which is a fair description of
+why it survived: correcting the message broke them. They assert the condition
+now — that the refusal names what went wrong and names the function that handles
+it. The third was found by CI rather than by grep, because it only runs under the
+kernel-validation job. Fitting, in that the last test still asserting splitting
+was unimplemented was the one hardest to run.
+
+### 7.6 rust-blk-probe — a short read is not a short file
+
+**M4, Medium.** `let n = f.read(&mut head).unwrap_or(0);` — wrong twice.
+
+`unwrap_or(0)` discarded an `io::Error` inside a function that already returns
+`io::Result`, so an unreadable device and an empty file gave the same answer. And
+`Read::read` may return fewer bytes than asked for without an error and without
+being at end of input.
+
+The count is then read as a statement about the file. A read returning 4 makes
+the `n >= 8` guards false, so the vhdx and vhd magics become untestable and the
+image falls through to `Raw` — silently, for a file whose first eight bytes say
+exactly what it is. The trailing-footer check had the same shape with `== 8`
+standing in for the guard, so a fixed VHD would have been reported as raw too.
+
+`read_up_to` loops until the buffer is full or the source ends, retries
+`Interrupted` because a signal arriving is not a failure, and propagates
+everything else. A file shorter than the buffer still reports its length rather
+than erroring — a tiny raw image is legitimate, which is why this is not
+`read_exact` with its `UnexpectedEof` mapped back.
+
+Four tests, over readers that behave the way the trait permits and a regular file
+does not. **That gap is the whole story**: a local regular file fills a 16-byte
+buffer in one call, so the old form was right on every machine anybody ran it on.
+
+### 7.7 diskjockey — the pipe fixes, finished and then corrected by CI
+
+§1.8 has the defect. Two things about it only became visible afterwards.
+
+The first version of the tests **failed CI on somebody else's tests**. All three
+flood tests reported the same 64 seconds, which is what a starved thread pool
+looks like rather than a deadlock: `withDeadline` ran its work on the global
+queue, so the deadline could itself be denied a thread and then report a timeout
+for a test that never ran. Meanwhile the subprocess-spawning, thread-blocking
+tests starved `DetachedOperationWatchdog`, whose assertions are on
+50-millisecond deadlines — eight of its cases failed.
+
+The suite is `.serialized` now and the watchdog uses a dedicated `Thread`. That
+fed back into the helper itself: draining both pipes on background threads while
+blocking the caller's meant three threads per concurrent call. Only stderr goes
+to another thread now; stdout is read on the calling thread, which was already
+committed to waiting. Same guarantee, one blocked thread instead of two.
+
+### 7.8 rust-fs-xfs — mkfs step 1b: the superblock model completed
+
+[#54](https://github.com/antimatter-studios/rust-fs-xfs/pull/54). `Superblock`
+modelled 33 of the structure's fields — the ones a reader consults — so `apply`
+could only be honest by carrying the rest across from whatever was already in the
+buffer. Which makes it useless to a formatter: a formatter has a zeroed sector
+and a geometry, and nothing to carry anything from.
+
+Twenty more fields now: the realtime inodes, extent size and counts, the quota
+inodes, `qflags`, `flags`, `shared_vn`, the stripe unit and width, `imax_pct`,
+`rextslog`, the log sector geometry, `bad_features2`, and — v5 only —
+`sb_pquotino` and `sb_lsn`. They sit below a divider in the struct saying what
+they are for, kept flat so the field order still matches the on-disk order, which
+is the property that makes an offset typo visible by eye.
+
+**The test that proves the model complete** runs the same byte-for-byte
+comparison against a destination that starts as *zeroes*: a field nobody modelled
+reads back as zero and the assertion names its offset. The existing
+apply-over-itself test cannot fail that way, because the original's value is
+already sitting there.
+
+A second test covers what the fixtures cannot: **ten of the new fields are zero
+in every image `mkfs.xfs` produces with default options**, so the comparison
+above matches whether they are written or not. Each gets a distinct value and is
+read back at its offset — distinct, so a transposition cannot pass either.
+
+| removed from `apply` | empty-buffer test | per-field test |
+|---|---|---|
+| `sb_rextsize` | fails at `0x0053` | fails |
+| `sb_imax_pct` | fails at `0x007f` | fails |
+| the magic | fails at `0x0000` | fails |
+| `sb_qflags` | **passes** (zero in every fixture) | fails |
+
+The last row is why both exist.
+
+Adding public fields breaks struct-literal construction, so the crate's next tag
+is a minor bump.
+
+---
+
+## 8. Housekeeping and corrections
 
 **No VM was booted** at any point. The xfs superblock work used fixtures already
 captured in `.vm-share`. The one QEMU process running on the machine belongs to
