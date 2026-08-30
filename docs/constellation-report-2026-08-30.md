@@ -839,16 +839,13 @@ Both worth deciding soon.
 
 ### 6.6 The single next item, per repository
 
-Where a repo has one finding that should come before the others. Six of the
+Where a repo has one finding that should come before the others. Nine of the
 original rows are gone because they were done — §7 has them.
 
 | Repo | Next | Why |
 |---|---|---|
-| **ext4** | X1 | Nine hand-written copies of the one checksum tail that *has* a helper — the checksum a wrong write corrupts silently. The report's own follow-up says it is larger than first stated. |
 | **xfs** | M18 | `truncate` and `truncate_to_zero` have opposite argument orders — the pair most likely to be called wrongly. |
-| **erofs** | M6 | Compacted-pack geometry in **four encodings, one of which is correct**. A bug waiting for someone to reach for the wrong one. |
 | **erofs** | M22 | 117 inline hex slice ranges with no named-offset convention at all. The largest, and it would change how the whole crate reads. |
-| **vhd** | M3 | The sector-bitmap arithmetic written twice **with opposite bounds discipline**. Two copies disagreeing about bounds checking is how one ends up wrong. |
 | **partitions** | M5 | `SECTOR_SIZE` defined three times and then ignored eight — most likely to end in a real disagreement. |
 | **vhdx** | M5 | A comment that contradicts itself about data-sector placement. **Resolving it needs the spec**, not a rewording. |
 | **diskjockey** | A2/A3/A5 | `refresh()` forks `2N+1` processes on the main actor every three seconds. G1 made those calls **safe from deadlock; it did not make them cheap.** |
@@ -1138,6 +1135,134 @@ The last row is why both exist.
 
 Adding public fields breaks struct-literal construction, so the crate's next tag
 is a minor bump.
+
+### 7.9 rust-fs-erofs — one geometry, four encodings, one of them inert
+
+**M6, Medium.** EROFS has two compacted-index pack shapes: 4-byte
+(`vcnt = 2`, `pack_bytes = 8`, `encodebits = 16`) and 2-byte (`vcnt = 16`,
+`pack_bytes = 32`, `encodebits = 14`). `PackGeom` named all six values, and three
+other places re-hardcoded them — one of them while holding a `PackGeom` in scope
+two lines earlier.
+
+**Probing the coverage before touching anything found what the report did not.**
+The writer's `emit_pack(slice, 8, 2, 16)` takes `vcnt` as its third argument and
+discards it on the next line but one:
+
+```rust
+let _ = vcnt;
+```
+
+That argument was **dead at all three call sites**. Changing `16` to `8` in the
+2B call left every test passing, because it cannot affect anything. It reads as
+though it governs how many entries a pack holds; the caller's `take` does that,
+and `entries_slice.len()` is the real count.
+
+`CompactPackShape` with `COMPACT_4B` / `COMPACT_2B` is the one definition now,
+with `bytes_per_lcluster()` and `bytes_for()` for the derived values, and
+`compact_alignment_pad` replacing the kernel's `((32 - ebase % 32) / 4) & 7` —
+whose three numbers are all this geometry wearing no names: 32 is the 2B pack, 4
+is the 4B shape's bytes per lcluster, 7 is one less than the number of them that
+fit in a 2B pack.
+
+Four tests, **written first and red until the shapes existed**. Each states the
+format independently rather than restating the code: `encodebits` is
+`(pack_bytes - 4) * 8 / vcnt`, so a typo in any one field contradicts the other
+two; the pad and both region sizes are checked against the literal formulas they
+replace, over a full period and beyond.
+
+| field mutated | tests failing |
+|---|---|
+| `COMPACT_2B.encodebits` | 5 |
+| `COMPACT_2B.vcnt` | 6 |
+| `COMPACT_2B.pack_bytes` | 7 |
+
+The `vcnt` row was **zero** before. This did not only tidy the geometry — it
+moved a value out of a position where nothing could see it wrong.
+
+### 7.10 rust-img-vhd — two copies of one arithmetic, disagreeing about bounds
+
+**M3, Medium.** The read and write paths open-coded the same sector-bitmap bit
+arithmetic with opposite discipline: the read side indexed, the write side
+returned `Error::Corrupt("bitmap index out of range")`. Both are safe, and the
+asymmetry reads as though one of them is a bug — deciding which meant
+reconstructing the sizing argument out of `dynamic.rs`.
+
+`bitmap_get` / `bitmap_set` state the format's MSB-first ordering once and give
+the bounds question one answer. **Neither checks**, and the doc says why: the
+bitmap is one bit per sector of the block rounded up to a whole sector, so an
+index past the end would mean a caller had asked about a sector *outside the
+block* — a bug here, not corrupt input, which is what the old error named as the
+fault. Panicking beats returning `false` for the same reason: a silent `false`
+reads as "this sector is a hole" and hands the caller zeroes for data that
+exists.
+
+The ordering is asserted **against literal bytes** rather than against itself,
+because getting it backwards is invisible to a round trip through this crate —
+writer and reader would agree with each other and disagree with every other VHD
+tool.
+
+### 7.11 rust-fs-ext4 — a checksum written by hand in sixteen places, five of them untested
+
+**X1, High**, and the report undercounted it: nine sites became **sixteen** —
+twelve in `fs.rs`, three in `fsck.rs`, one in `mkfs.rs`, plus a seventeenth in
+the test suite.
+
+`Checksummer` had `patch_extent_tail` and `patch_xattr_block` but no
+`patch_dir_entry_tail`, so the recipe written most often was the one with no
+helper.
+
+**The coverage probe is the finding.** Corrupting the CRC span at each site, one
+at a time, to see which were held down by a test:
+
+| site | tests failing, before |
+|---|---|
+| `seed_directory_block` (`apply_mkdir`) | **0** |
+| `extend_dir_and_add_entry` | **0** |
+| the two htree variants | **0** |
+| all three `fsck.rs` repair sites | **0** |
+
+Not even the tests that verify dir-block checksums caught it — they check the
+blocks `mkfs` wrote, not the ones the driver writes afterwards. A wrong tail
+raises no error in this crate; it surfaces when Linux mounts the volume and
+reports the directory as corrupt.
+
+One miss is worth its own note. The first version of the growth test created two
+hundred files and then looked, and **still saw nothing**: every later in-place add
+rewrites the same block and recomputes its checksum at a *different* site, so a
+wrong checksum from the extension path is overwritten by a right one. The test
+now stops on the create that grew the directory.
+
+`tests/dir_block_checksums_after_writes.rs` walks every directory block reachable
+from the root after mkdir, create, unlink, rename and growth, and verifies each
+tail. It counts what it checked and asserts the count, because an assertion that
+silently checks nothing is the failure mode the whole file is about.
+
+Mutating the single helper now fails **12 tests across three suites**.
+
+**The copy in `tests/fsck_wrong_dotdot.rs` is deliberately left alone**: a test
+that computed the checksum through the helper would agree with a broken helper.
+An independent restatement of the recipe is what makes it an oracle.
+
+### 7.12 What the second wave kept teaching
+
+Three of these were filed as duplication, and in each case **one of the copies
+turned out to be untested, inert or weaker than its siblings**:
+
+- erofs passed a `vcnt` argument that the function discarded — dead at three call
+  sites, and mutating it broke nothing.
+- vhd had two copies of one arithmetic with opposite bounds discipline, so the
+  asymmetry itself was the question a reader had to answer.
+- ext4 had sixteen copies of a checksum, and corrupting five of them
+  independently failed **no test at all**.
+
+The habit that found all three is the same: before changing a duplicated thing,
+break each copy in turn and see which ones anything notices. Where the answer is
+"nothing", the duplication was not the whole problem — it was hiding one.
+
+It also caught a bad test. The first ext4 growth test created two hundred files
+and then checked, and saw nothing, because every later write to a block fixed the
+checksum the path under test had got wrong. A test can be green for the reason
+the code is broken.
 
 ---
 
