@@ -26,18 +26,14 @@ public enum MountTableParser {
     public static func enumerate(fsTypesOfInterest: Set<String>) -> [AttachedDisk] {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/sbin/mount")
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = Pipe()
-        do { try proc.run() } catch { return [] }
-        // Read BEFORE waiting. A child that writes more than the pipe buffer
-        // holds (~64 KiB) blocks on the write, and a parent already inside
-        // waitUntilExit() never drains it — both wait for the other. Reading
-        // to EOF first cannot deadlock: EOF arrives when the child closes its
-        // end, which it does on exit.
-        let data = try? pipe.fileHandleForReading.readToEnd()
-        proc.waitUntilExit()
-        guard let data, let text = String(data: data, encoding: .utf8) else { return [] }
+        // Reading stdout before waiting was half the fix: stderr was
+        // still an unread `Pipe()`, and a child blocked writing to a
+        // full stderr never closes stdout, so the read that was meant
+        // to prevent the deadlock blocks instead. The runner drains
+        // both, concurrently.
+        guard let result = try? ProcessRunner.run(proc) else { return [] }
+        let text = result.stdoutText
+        guard !text.isEmpty else { return [] }
 
         var results: [AttachedDisk] = []
         for line in text.split(separator: "\n") {

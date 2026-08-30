@@ -238,10 +238,46 @@ blocks on the write. A parent already inside `waitUntilExit()` never drains it.
 so this was not theoretical.
 
 Reading to EOF first cannot deadlock: EOF arrives when the child closes its end,
-which it does on exit. Fixed at four sites — `MountTableParser.enumerate`, its
-zombie-unmount path, `RawDisksModel`, and `FSKitMountService`, where **both**
-pipes are now drained since stderr can fill on its own. Three sites remain in
-`DiskJockeyAgent`, a separate unsandboxed target with the same defect.
+which it does on exit.
+
+**Reading first turned out to be only half of it**, and the first round shipped
+the other half in two forms. Both are fixed now.
+
+*One pipe read, the other left attached and unread.* `MountTableParser.enumerate`
+and `RawDisksModel.runDiskutil` drained stdout before waiting — and set
+`standardError = Pipe()`, which nothing read. A child blocked writing to a full
+stderr never closes stdout, **so the read that was meant to prevent the deadlock
+blocks instead**. An unread pipe is not a way of ignoring a stream; it is a
+64 KiB buffer that stops the child once it fills.
+
+*Both pipes read, one after the other.* `FSKitMountService` drained stdout to EOF
+and then stderr. If the child fills stderr while this side is blocked on stdout,
+the same standoff happens one stream over — and which fills first depends on the
+machine, so it would have presented as intermittent.
+
+The repair is one helper, `DiskJockeyLibrary/ProcessRunner.swift`, draining both
+concurrently and waiting afterwards, plus `runDiscardingOutput` for a child whose
+output is genuinely unwanted: that one uses `FileHandle.nullDevice`, which has no
+buffer to fill.
+
+**Two sites nobody had counted.** `AttachedDiskDetailView` runs `diskutil
+unmount` and `fsck_fskit --progress`, both waiting before either pipe is read.
+The second is the worst instance in the tree — `--progress` means the child
+*streams*, a line per step for as long as the check runs, so the buffer fills on
+any volume large enough to be worth checking.
+
+**And the five in `DiskJockeyAgent`.** It is not a target in the Xcode project;
+it is compiled standalone and links no framework of ours, so it carries its own
+copy of the helper with the reasoning duplicated in full. `hdiutil info -plist`
+lists every attached image on the machine and `diskprobe` emits a JSON
+description of a whole disk — both were called with the wait first.
+
+Six tests, each with a watchdog, because the failure under test is a **hang**
+rather than a wrong answer: without a deadline a regression stops the suite
+instead of failing it, and a stalled run reads as a slow machine. Two flood
+512 KiB down both streams at once. Mutation-checked — restoring the sequential
+drain fails the both-streams test at its 20-second deadline, and swapping
+`nullDevice` for an unread `Pipe()` fails the discard test the same way.
 
 **Also in diskjockey.** `A1` — `AppContainer` exposed:
 
@@ -787,7 +823,6 @@ Where a repo has one finding that should come before the others:
 | **vhd** | M3 | The sector-bitmap arithmetic written twice **with opposite bounds discipline**. Two copies disagreeing about bounds checking is how one ends up wrong. |
 | **partitions** | M5 | `SECTOR_SIZE` defined three times and then ignored eight — most likely to end in a real disagreement. |
 | **vhdx** | M5 | A comment that contradicts itself about data-sector placement. **Resolving it needs the spec**, not a rewording. |
-| **diskjockey** | agent pipes | Three remaining `waitUntilExit` deadlocks in `DiskJockeyAgent`. |
 | **diskjockey** | A2/A3/A5 | `refresh()` forks `2N+1` processes on the main actor every three seconds. G1 made those calls **safe from deadlock; it did not make them cheap.** |
 
 ### 6.7 Task #4 — mkfs, and an unresolved constraint

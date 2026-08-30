@@ -327,23 +327,15 @@ final class FSKitMountService {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: probe)
         proc.arguments = [path]
-        let stdout = Pipe()
-        let stderr = Pipe()
-        proc.standardOutput = stdout
-        proc.standardError = stderr
-        try proc.run()
-        // Read before waiting: a child filling the ~64 KiB pipe buffer blocks
-        // on the write, and a parent already inside waitUntilExit() never
-        // drains it. Both pipes are drained for the same reason — stderr can
-        // fill on its own.
-        let outData = stdout.fileHandleForReading.readDataToEndOfFile()
-        let errData = stderr.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        if proc.terminationStatus != 0 {
-            let err = String(data: errData, encoding: .utf8) ?? ""
-            throw FSKitError.processFailed(exitCode: proc.terminationStatus, stderr: err)
+        // Draining stdout to EOF and only then stderr is still a
+        // deadlock: if the child fills stderr while this side is blocked
+        // on stdout, each waits for the other one stream over. The
+        // runner reads both concurrently.
+        let result = try ProcessRunner.run(proc)
+        if result.status != 0 {
+            throw FSKitError.processFailed(exitCode: result.status, stderr: result.stderrText)
         }
-        return try JSONDecoder().decode(DiskProbeResult.self, from: outData)
+        return try JSONDecoder().decode(DiskProbeResult.self, from: result.stdout)
     }
 
     /// Find the diskprobe binary. Checks (in order):

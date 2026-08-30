@@ -30,16 +30,51 @@ the write. A parent already inside `waitUntilExit()` never drains it. **Each
 waits for the other, and the app hangs.**
 
 Reading to EOF first cannot deadlock: EOF arrives when the child closes its end,
-which it does on exit. Fixed at four sites in the app —
-`MountTableParser.enumerate`, its zombie-unmount path, `RawDisksModel`, and
-`FSKitMountService`, where **both** pipes are now drained because stderr can
-fill on its own.
+which it does on exit.
 
 `diskutil list -plist` on a machine with many disks is comfortably past 64 KiB,
 so this was not theoretical.
 
-Three sites remain in `DiskJockeyAgent`, which is a separate unsandboxed helper;
-they have the same defect and belong in a change scoped to that target.
+**Reading first turned out to be half of it, and the first round shipped the
+other half in two forms.** Both are now fixed, along with every remaining site.
+
+*One pipe read, the other left attached and unread.* `MountTableParser.enumerate`
+and `RawDisksModel.runDiskutil` drained stdout before waiting — and set
+`standardError = Pipe()`, which nothing read. A child blocked writing to a full
+stderr never closes stdout, so the read that was meant to prevent the deadlock
+blocks instead. An unread pipe is not a way of ignoring a stream; it is a 64 KiB
+buffer that stops the child once it fills.
+
+*Both pipes read, one after the other.* `FSKitMountService` drained stdout to EOF
+and then stderr. If the child fills stderr while this side is blocked on stdout,
+the same standoff happens one stream over — and which stream fills first depends
+on the machine, so it would have looked intermittent.
+
+The fix is one helper, `DiskJockeyLibrary/ProcessRunner.swift`, that drains both
+concurrently and waits afterwards, plus `runDiscardingOutput` for a child whose
+output is genuinely unwanted — that one uses `FileHandle.nullDevice`, which has
+no buffer to fill.
+
+**Two sites nobody had counted.** `AttachedDiskDetailView` runs `diskutil
+unmount` and `fsck_fskit --progress`, both with `waitUntilExit()` before either
+pipe is read. The second is the worst instance in the tree: `--progress` means
+the child *streams*, writing a line per step for as long as the check runs, so
+the buffer fills on any volume large enough to be worth checking.
+
+**And the five in `DiskJockeyAgent`.** It is not a target in the Xcode project —
+it is compiled standalone and links no framework of ours — so it carries its own
+copy of the helper, with the reasoning duplicated in full so a change to one is
+visibly a change to a decision. `hdiutil info -plist` lists every attached image
+on the machine, and `diskprobe` emits a JSON description of a whole disk; both
+were called with the wait first.
+
+Six tests cover it, each with a watchdog, because the failure under test is a
+**hang** rather than a wrong answer — without a deadline a regression stops the
+suite instead of failing it, and a stalled run reads as a slow machine. Two of
+them flood 512 KiB down both streams at once. Mutation-checked: reverting to the
+sequential drain fails `a child that floods both streams does not deadlock` at
+the 20-second deadline, and swapping `nullDevice` for an unread `Pipe()` fails
+`output can be discarded without blocking the child` the same way.
 
 ### A1 — a protocol and a force-cast that existed only to trap each other — **fixed**
 

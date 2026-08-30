@@ -261,17 +261,13 @@ public final class RawDisksModel: ObservableObject {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
         proc.arguments = args
-        let outPipe = Pipe()
-        proc.standardOutput = outPipe
-        proc.standardError = Pipe()
-        do { try proc.run() } catch { return nil }
-        // Read before waiting: a child filling the ~64 KiB pipe buffer blocks
-        // on the write, and a parent already inside waitUntilExit() never
-        // drains it — each waits for the other.
-        let out = try? outPipe.fileHandleForReading.readToEnd()
-        proc.waitUntilExit()
-        guard proc.terminationStatus == 0 else { return nil }
-        return out
+        // `diskutil list -plist` on a machine with many disks is
+        // comfortably past the ~64 KiB a pipe holds, and stderr used to
+        // be a `Pipe()` nothing read — which blocks the child just as
+        // surely as not reading stdout. The runner drains both,
+        // concurrently, and waits afterwards.
+        guard let result = try? ProcessRunner.run(proc), result.status == 0 else { return nil }
+        return result.stdout
     }
 
     private static func nonEmpty(_ s: String?) -> String? {

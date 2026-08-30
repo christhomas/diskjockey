@@ -376,14 +376,14 @@ struct AttachedDiskDetailView: View {
             let task = Process()
             task.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
             task.arguments = ["unmount", disk.mountPath]
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            task.standardOutput = stdoutPipe
-            task.standardError = stderrPipe
             do {
-                try task.run()
-                task.waitUntilExit()
-                let rc = task.terminationStatus
+                // Both pipes are drained before the wait, and drained
+                // concurrently. Waiting first deadlocks once the child
+                // fills a ~64 KiB pipe buffer nobody is reading; draining
+                // one and then the other deadlocks once the child fills
+                // the second while this side is blocked on the first.
+                let result = try ProcessRunner.run(task)
+                let rc = result.status
                 let err: String?
                 if rc == 0 {
                     err = nil
@@ -391,9 +391,7 @@ struct AttachedDiskDetailView: View {
                     // diskutil writes its failure reason to stdout, not
                     // stderr (see "Unmount failed ..." lines), so merge
                     // both streams and surface whatever came out.
-                    let out = (try? stdoutPipe.fileHandleForReading.readToEnd()).flatMap { String(data: $0, encoding: .utf8) } ?? ""
-                    let errText = (try? stderrPipe.fileHandleForReading.readToEnd()).flatMap { String(data: $0, encoding: .utf8) } ?? ""
-                    let combined = (out + errText).trimmingCharacters(in: .whitespacesAndNewlines)
+                    let combined = result.combinedText
                     err = combined.isEmpty ? "diskutil unmount failed (rc=\(rc))" : combined
                 }
                 await MainActor.run {
@@ -543,14 +541,15 @@ struct AttachedDiskDetailView: View {
             let task = Process()
             task.executableURL = URL(fileURLWithPath: "/sbin/fsck_fskit")
             task.arguments = ["--progress", "-t", fsArg, devicePath]
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            task.standardOutput = stdoutPipe
-            task.standardError = stderrPipe
             do {
-                try task.run()
-                task.waitUntilExit()
-                let rc = task.terminationStatus
+                // `--progress` means this child streams: it writes a
+                // line per step for as long as the check runs, so the
+                // pipe buffer fills on any volume large enough to be
+                // worth checking. Waiting for it before reading is the
+                // deadlock; the runner reads both streams concurrently
+                // and waits afterwards.
+                let result = try ProcessRunner.run(task)
+                let rc = result.status
                 // rc == 0: clean. rc != 0 here means we couldn't even
                 // launch the check (perm denied on raw device, missing
                 // entitlement, etc) — actual fs-level findings come
@@ -560,9 +559,7 @@ struct AttachedDiskDetailView: View {
                 if rc == 0 {
                     err = nil
                 } else {
-                    let out = (try? stdoutPipe.fileHandleForReading.readToEnd()).flatMap { String(data: $0, encoding: .utf8) } ?? ""
-                    let errText = (try? stderrPipe.fileHandleForReading.readToEnd()).flatMap { String(data: $0, encoding: .utf8) } ?? ""
-                    let combined = (out + errText).trimmingCharacters(in: .whitespacesAndNewlines)
+                    let combined = result.combinedText
                     err = combined.isEmpty ? "fsck_fskit failed (rc=\(rc))" : combined
                 }
                 await MainActor.run {
