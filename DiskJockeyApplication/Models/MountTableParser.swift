@@ -30,9 +30,14 @@ public enum MountTableParser {
         proc.standardOutput = pipe
         proc.standardError = Pipe()
         do { try proc.run() } catch { return [] }
+        // Read BEFORE waiting. A child that writes more than the pipe buffer
+        // holds (~64 KiB) blocks on the write, and a parent already inside
+        // waitUntilExit() never drains it — both wait for the other. Reading
+        // to EOF first cannot deadlock: EOF arrives when the child closes its
+        // end, which it does on exit.
+        let data = try? pipe.fileHandleForReading.readToEnd()
         proc.waitUntilExit()
-        guard let data = try? pipe.fileHandleForReading.readToEnd(),
-              let text = String(data: data, encoding: .utf8) else { return [] }
+        guard let data, let text = String(data: data, encoding: .utf8) else { return [] }
 
         var results: [AttachedDisk] = []
         for line in text.split(separator: "\n") {
@@ -142,9 +147,11 @@ public enum MountTableParser {
             p.standardError = pipe
             do {
                 try p.run()
+                // Read before waiting — see `enumerate`.
+                let outData = try? pipe.fileHandleForReading.readToEnd()
                 p.waitUntilExit()
                 let rc = p.terminationStatus
-                let out = (try? pipe.fileHandleForReading.readToEnd())
+                let out = outData
                     .flatMap { String(data: $0, encoding: .utf8) }?
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 if rc == 0 {

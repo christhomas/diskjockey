@@ -265,9 +265,13 @@ public final class RawDisksModel: ObservableObject {
         proc.standardOutput = outPipe
         proc.standardError = Pipe()
         do { try proc.run() } catch { return nil }
+        // Read before waiting: a child filling the ~64 KiB pipe buffer blocks
+        // on the write, and a parent already inside waitUntilExit() never
+        // drains it — each waits for the other.
+        let out = try? outPipe.fileHandleForReading.readToEnd()
         proc.waitUntilExit()
         guard proc.terminationStatus == 0 else { return nil }
-        return try? outPipe.fileHandleForReading.readToEnd()
+        return out
     }
 
     private static func nonEmpty(_ s: String?) -> String? {

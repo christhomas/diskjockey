@@ -332,11 +332,15 @@ final class FSKitMountService {
         proc.standardOutput = stdout
         proc.standardError = stderr
         try proc.run()
-        proc.waitUntilExit()
+        // Read before waiting: a child filling the ~64 KiB pipe buffer blocks
+        // on the write, and a parent already inside waitUntilExit() never
+        // drains it. Both pipes are drained for the same reason — stderr can
+        // fill on its own.
         let outData = stdout.fileHandleForReading.readDataToEndOfFile()
+        let errData = stderr.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
         if proc.terminationStatus != 0 {
-            let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(),
-                             encoding: .utf8) ?? ""
+            let err = String(data: errData, encoding: .utf8) ?? ""
             throw FSKitError.processFailed(exitCode: proc.terminationStatus, stderr: err)
         }
         return try JSONDecoder().decode(DiskProbeResult.self, from: outData)
