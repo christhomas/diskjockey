@@ -9,9 +9,37 @@ the surface they get is decided rather than improvised.
 
 ---
 
+## What these are for
+
+**Filesystem operations on a disk image or a raw device, without
+mounting it.**
+
+That is the whole pitch, and it is worth stating before the naming
+argument, because the naming argument is downstream of it.
+
+On Linux this need barely exists: `mount -o loop disk.img /mnt` and then
+`ls`, `cp` and `rm` do the job, because the kernel has drivers for all
+of these formats. On macOS it does not. There is no loop mount for ext4,
+NTFS, XFS or Btrfs — which is the reason this project exists at all — so
+"look inside this image" has no answer short of installing a filesystem
+extension, or booting a Linux VM to do it.
+
+These tools read and write the image **directly**. No mount, no kernel
+driver, no root, no FSKit extension, no VM. The same code path serves a
+raw device (`/dev/diskN`, `\\.\PhysicalDriveN`) as serves a file,
+because to a driver both are just bytes at offsets.
+
+Which is also why the read verbs matter more than `mkfs`, and why they
+come first: someone can borrow a Linux box to *create* a filesystem, but
+"read this disk that will not mount" is the thing they installed this
+for, and it is the thing macOS offers nothing for.
+
+---
+
 ## The problem
 
-The Linux filesystem toolset has one consistent name and dozens of
+Given that, the question is what to call them — and the Linux toolset is
+an object lesson. It has one consistent name and dozens of
 inconsistent ones. Four filesystems, four separate vocabularies for the
 same concepts:
 
