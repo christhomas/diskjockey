@@ -227,6 +227,36 @@ not free there**:
 Twelve names that each mean something beat forty that mostly restate
 `ls`.
 
+### The pipe supplies the verbs we did not write
+
+This is what makes the small set *sufficient* rather than merely tidy,
+and it is why the slippery slope has a floor. `read` emits raw bytes on
+stdout and `write` consumes them on stdin, so the shell already owns
+every operation we declined to name:
+
+```sh
+fs.ext4 img read /var/log/syslog | grep -i error
+fs.ext4 img read /etc/passwd | wc -l
+tar cf - ./dir | fs.ext4 img write /backup.tar
+fs.ext4 img get --json | jq -r .label
+```
+
+No `grep.ext4`, no `tee.ext4`, no `wc.ext4`, no `head.ext4` — asking for
+them is asking us to reimplement tools that already work, on the wrong
+side of a pipe.
+
+Copying a file **between two different filesystems** falls out of the
+same property, with no `cp` verb existing anywhere:
+
+```sh
+fs.ext4 src.img read /data.bin | fs.ntfs dst.img write /data.bin
+```
+
+It also settles the output-format split from the other direction:
+metadata composes with `jq`, file content composes with everything else.
+Each half gets the format its ecosystem expects, which is why the
+carve-out is not an inconsistency to apologise for.
+
 ### No `mkfs` dispatcher of our own
 
 Declining it *removes* risk rather than just declining a feature. A bare
