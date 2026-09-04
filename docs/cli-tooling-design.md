@@ -34,6 +34,42 @@ come first: someone can borrow a Linux box to *create* a filesystem, but
 "read this disk that will not mount" is the thing they installed this
 for, and it is the thing macOS offers nothing for.
 
+### An escape hatch, not a filesystem
+
+Worth being blunt about the scope, because it is what makes the small
+verb set defensible rather than merely small: **nobody is meant to do
+real filesystem work through these.** Accessing data inside an image
+this way is the emergency exit — get the one file out, put the one file
+in, read the label, check whether it is dirty — not somewhere to live.
+
+If you want a filesystem, mount one. That is what the FSKit extension is
+for, and it is the better tool the moment you have more than an errand:
+the kernel gets a cache, `find` and `rsync` and your editor all work, and
+nothing is paying process-startup cost per file.
+
+These two are not competitors, they are different modes:
+
+| | use |
+|---|---|
+| the extension | real work — browsing, editing, building, copying trees |
+| these tools | an errand, or a context where mounting is not available: CI, a script, a machine without the extension installed, an image you do not trust enough to mount |
+
+Several things follow, and they are the answers to feature requests that
+would otherwise arrive one at a time:
+
+- **No obligation to be fast.** Nobody is running a build out of an
+  image. Correct and obvious beats clever.
+- **No obligation to be complete.** There is no `find`, no `chmod -R`,
+  no recursive copy, and the answer to "why not" is *mount it*. A tool
+  that is honestly an escape hatch does not need to grow into a shell.
+- **`read` and `write` really are enough**, because the unit of work is
+  a file, not a session.
+
+It also explains the ordering note further down rather than leaving it
+as a preference: the read verbs come first because **retrieval is the
+whole use case**. "Get my data off this disk that will not mount" is the
+errand people actually have.
+
 ---
 
 ## The problem
