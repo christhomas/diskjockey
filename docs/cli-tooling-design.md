@@ -96,8 +96,42 @@ mkfs.ext4    disk.img
 fsck.ext4    disk.img
 info.ext4    disk.img
 ls.ext4      disk.img /the/subdirectory
-cat.ext4     disk.img /path/to/file
+read.ext4    disk.img /path/to/file          # stdout, or -o out.bin
+write.ext4   disk.img /path/to/file < input
 resize.ext4  disk.img 20G
+```
+
+### `read`/`write`, not `cat`
+
+An earlier draft had `cat.ext4`, and the asymmetry is probably why this
+set had no write verb at all until someone noticed: `cat` has no natural
+inverse. `tee.ext4` is not a name anyone would guess, so the write side
+simply never got named — while `am-fs-ext4`, `am-fs-ntfs` and
+`am-fs-xfs` all have write paths, and `rust-ntfs` already ships `write`,
+`touch`, `mkdir`, `rm`, `rmdir`, `rename` and `link`.
+
+Two smaller objections point the same way. `cat` means *concatenate*,
+and we would only ever pass one file. And it bakes the destination into
+the name: the operation is "read this file", of which stdout is one
+possible sink alongside `-o` or a pipe.
+
+`ls` survives the same test — listing a directory is exactly what `ls`
+means. `cat` does not.
+
+The precedent argument is real and does not carry it: `ntfscat` ships
+and `debugfs` has a `cat` command. But this scheme's whole claim is one
+uniform vocabulary rather than twenty years of drift, and borrowing
+shell idioms piecemeal is how that drift begins.
+
+The namespace verbs the drivers already implement follow the same rule —
+name the operation, in matched pairs where one exists:
+
+```
+mkdir.ext4  disk.img /new/dir
+rm.ext4     disk.img /path
+mv.ext4     disk.img /from /to
+ln.ext4     disk.img /target /link
+touch.ext4  disk.img /path
 ```
 
 **The target is always the first argument.** `mkfs.*` and `fsck.*`
@@ -394,7 +428,7 @@ Confirming it from the other direction: neither crate has a
 thin wrappers around exactly that one function.
 
 **So: defer.** The ordering note below is the second reason rather than
-an afterthought. `ls.xfs`, `cat.xfs` and `info.xfs` are wrappers over
+an afterthought. `ls.xfs`, `read.xfs` and `info.xfs` are wrappers over
 `mount`, `dir_*`, `read_file`, `stat` and `get_volume_info` — all of
 which exist in both crates today. `mkfs.xfs` is a new subsystem.
 Someone can borrow a Linux box to *create* an XFS filesystem; they
