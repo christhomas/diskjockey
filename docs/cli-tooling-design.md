@@ -185,8 +185,10 @@ Consequences worth keeping:
 
 - adding a verb is one more link per filesystem that supports it;
 - **partial support is expressed by the link's absence.** If xfs cannot
-  resize yet, `resize.xfs` does not exist, and `resize.<TAB>` tells the
-  truth at completion time rather than as a runtime failure.
+  be checked yet, `fsck.xfs` does not exist, and `fsck.<TAB>` tells the
+  truth at completion time rather than as a runtime failure. (This is
+  why properties are NOT dotted verbs — see the interface contract:
+  their support is per-key, so a link could not carry it.)
 
 ### No `mkfs` dispatcher of our own
 
@@ -266,37 +268,91 @@ filesystems answer the same way.
 4. **Same exit codes.** `fsck.*` follows the scheme scripts already
    depend on — 0 clean, 1 corrected, 4 uncorrected, 8 operational error.
 
-5. **Properties are a namespace, not a verb each.** Linux invented
+5. **Properties are a namespace, and they get ONE tool with
+   subcommands rather than a dotted verb each.** Linux invented
    `e2label`, `xfs_admin -L`, `ntfslabel`, `tune2fs -U` and
    `btrfs filesystem label` for one concept. Instead:
 
    ```
-   get.ext4 disk.img label
-   set.ext4 disk.img label "Backup"
-   set.ntfs disk.img dirty false
+   fs.ext4 disk.img get label
+   fs.ext4 disk.img set label "Backup"
+   fs.ntfs disk.img set dirty false
+   fs.ext4 disk.img get                # list every key, with types
+   fs.ext4 disk.img resize 20G --force
    ```
+
+   This is the one place the dotted scheme is dropped, and the reason is
+   the same one that justifies it everywhere else. The scheme's real
+   payoff is that **partial support shows up as a missing link** — if
+   xfs cannot be checked, `fsck.xfs` does not exist and tab-completion
+   says so. That signal cannot work for properties, because support is
+   per-KEY, not per-verb: `set.xfs` existing would tell you nothing,
+   since it might accept `label` and refuse `uuid`.
+
+   So the split is a rule rather than an exception:
+
+   - **one specific action** gets its own dotted name — `mkfs`, `fsck`,
+     `read`, `write`, `ls`, `mkdir`, `rm`, `mv`, `ln`, `touch`. Support
+     is per-verb, so the link carries it.
+   - **a namespace of operations over a keyspace** gets one tool with
+     subcommands. Support is per-key and has to be discovered by
+     asking, which is what `fs.<fs> <target> get` with no key does.
+
+   **Human-readable by default, `--json` to opt in.** One rule, applied
+   the same way whether or not a key was given:
+
+   ```
+   fs.ext4 disk.img get              # key = value table
+   fs.ext4 disk.img get label        # Backup
+   fs.ext4 disk.img get --json       # { "label": "Backup", ... }
+   fs.ext4 disk.img get label --json # { "label": "Backup" }
+   ```
+
+   An earlier draft branched on the shape of the answer — JSON for the
+   whole document, bare text for a single key. It reads well and is
+   worse: you have to remember which you will get. The flat rule keeps
+   `$(fs.ext4 disk.img get label)` working with no flag, which is the
+   case that matters most, and matches what `gh`, `docker` and
+   `kubectl` do.
+
+   The honest cost: bare text cannot unambiguously express a label with
+   a trailing space or an embedded newline. `git config` has precisely
+   this problem and still prints bare, because the ergonomics win and
+   `--json` is one flag away for anyone who cares.
+
+   `tune.<fs>` was considered for the name, since `tune2fs` is precisely
+   this tool. It implies write-only, and half of this is reading.
+   `btrfs filesystem …` made the same call.
 
    A new property is a new key, not a new command. ntfs already
    implements `set_volume_label`, `read_volume_label`, `is_dirty` and
    `clear_dirty`, so this has working code behind it today.
 
-   **Size is a property too, so there is no `resize` verb.** An earlier
-   draft had one, which was this document making the exact mistake it
-   criticises one paragraph earlier: Linux has `resize2fs`,
-   `xfs_growfs`, `ntfsresize` and `btrfs filesystem resize` for one
-   concept, the same way it has four spellings of "label".
+   **`set size` does not exist; `resize` does.** An earlier draft folded
+   resizing into `set`, on the grounds that size is a property. Size is
+   a property to READ. Changing it is not a write of that property — it
+   is a job that happens to end with the number being different, and it
+   relocates data, takes minutes and can fail partway.
+
+   The test that separates them is whether the operation needs anything
+   beyond the value:
 
    ```
-   set.ext4 disk.img size 20G
+   fs.ext4 disk.img set label "Backup"                    # a value
+   fs.ext4 disk.img resize 20G --force --no-shrink --dry-run
    ```
 
-   One caveat that has to be written down rather than glossed: every
-   other property here is a field write and returns instantly, whereas
-   setting `size` relocates data, can take minutes and can fail partway.
-   Sitting in a namespace of cheap operations makes it look cheaper than
-   it is. That is answered by requiring `--force` and by saying so in
-   the help, not by giving it a verb of its own — a separate verb would
-   not make it any less expensive, only harder to find.
+   `set` can be a uniform setter precisely BECAUSE every key takes one
+   value and nothing else. The moment one key needs a force flag, a
+   grow/shrink distinction and a dry run, `set` becomes a generic verb
+   carrying per-key flags — which is the shape this whole scheme exists
+   to avoid.
+
+   The asymmetry is honest rather than awkward. Plenty of properties are
+   readable and never writable (`block.size`, on every filesystem);
+   size is the case where the read and the write are different kinds of
+   thing. So `get size.total` answers, `get` reports size as
+   non-writable, and the help names `resize` as what to use instead.
 
    **`info` and `get` are the same tool under two names.** An earlier
    draft justified keeping them apart by claiming different output
