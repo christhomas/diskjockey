@@ -337,6 +337,23 @@ filesystems answer the same way.
    `jq -r`. That is the trade — worse at a prompt, better for everything
    driving these programmatically.
 
+   **This flipped twice while being written**, so the deciding argument
+   is recorded rather than left to whoever speaks last. The two cases
+   are close on convenience and NOT symmetric on failure:
+
+   - text default, automation forgets `--json` → a script parses
+     `Backup Volume` and keeps `Backup`, or splits a filename on a
+     space. Wrong, plausible-looking, silent.
+   - JSON default, a person forgets `--text` → they see quotes.
+     Immediate, harmless, self-correcting.
+
+   One default makes a human mildly annoyed; the other makes a script
+   quietly wrong.
+
+   **The tripwire for revisiting it:** if the tools end up mostly typed
+   by hand rather than driven, the premise is gone and this should flip.
+   It is a default, not an architecture — one line and this paragraph.
+
    `tune.<fs>` was considered for the name, since `tune2fs` is precisely
    this tool. It implies write-only, and half of this is reading.
    `btrfs filesystem …` made the same call.
