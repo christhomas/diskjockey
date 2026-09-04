@@ -120,15 +120,47 @@ package uses that package's house style. Note also `mksquashfs`,
 ```
 
 ```
-mkfs.ext4    disk.img
-fsck.ext4    disk.img
-info.ext4    disk.img
-ls.ext4      disk.img /the/subdirectory
-read.ext4    disk.img /path/to/file          # stdout, or -o out.bin
-write.ext4   disk.img /path/to/file < input
-get.ext4     disk.img label
-set.ext4     disk.img size 20G
+mkfs.ext4  disk.img
+fsck.ext4  disk.img
+fs.ext4    disk.img ls /the/subdirectory
+fs.ext4    disk.img read /path/to/file        # stdout, or -o out.bin
+fs.ext4    disk.img write /path/to/file < input
+fs.ext4    disk.img mkdir /new/dir
+fs.ext4    disk.img get label
+fs.ext4    disk.img set label "Backup"
+fs.ext4    disk.img resize 20G --force
 ```
+
+### Only two verbs are dotted, and the boundary is not arbitrary
+
+Earlier drafts dotted the file operations too — `read.ext4`,
+`write.ext4`, `ls.ext4`, `mkdir.ext4` and so on. The objection that
+killed it is that **there is no principled place to stop.** If
+`mkdir.ext4` earns a name, so do `stat.ext4`, `du.ext4`, `find.ext4`,
+`chmod.ext4`, `truncate.ext4` and `df.ext4` — every one exactly as
+defensible as the last, and the list becomes a snapshot of whatever
+someone thought of that week. Reinventing the Linux command set, one
+plausible verb at a time, is the failure mode this document opens by
+criticising.
+
+The line that does hold is between a closed set and an open one:
+
+- **`mkfs` and `fsck` are closed.** Two whole-filesystem lifecycle
+  actions, with names everyone already types and that other tools expect
+  — `mount -t`, the `fsck` front-end. They stay dotted.
+- **Operations on paths inside a filesystem are open-ended.** There is
+  no set to enumerate, so they go under one tool that can be asked what
+  it supports.
+
+An earlier draft defended the dotted verbs on the grounds that a missing
+link signals missing support — no `write.erofs` because EROFS is
+read-only. That does not survive contact with what the shell actually
+prints: a missing link gives **`command not found`**, which reads as
+"you did not install it", not "this filesystem cannot do that". The
+signal was ambiguous in the worse direction.
+`fs.erofs disk.img write …` answering *"EROFS is read-only"* is strictly
+better, and it is the same reason properties could not be dotted:
+support is per-operation, and only the tool knows.
 
 ### `read`/`write`, not `cat`
 
@@ -173,22 +205,27 @@ subcommands (`inspect.ext4 ls …`). It reintroduces exactly the
 inconsistency we are removing — some tools would take a subcommand and
 some would not, inside one namespace.
 
-### Names are free; binaries are not
+### Names are free; PATH entries are not
 
-The full matrix is 4 filesystems × ~6 verbs ≈ 24 names, which sounds
-expensive and is not: it is **one multi-call binary dispatching on
-`argv[0]`**, installed under every name. Busybox works this way, and so
-does e2fsprogs — which is why `mkfs.ext4` shows a link count of 2 on an
-installed copy.
+Three names per filesystem — `mkfs.<fs>`, `fsck.<fs>`, `fs.<fs>` — so
+four filesystems is twelve entries. Still **one multi-call binary
+dispatching on `argv[0]`**, installed under each name, the way busybox
+and e2fsprogs do it (which is why an installed `mkfs.ext4` shows a link
+count of 2). `fs.<fs>` then dispatches its own subcommands normally.
 
-Consequences worth keeping:
+The earlier draft dotted every verb, which would have been 4 × ~10 ≈ 40.
+The implementation cost really is near zero — that was never the
+objection — but **PATH is a shared global namespace and the entries are
+not free there**:
 
-- adding a verb is one more link per filesystem that supports it;
-- **partial support is expressed by the link's absence.** If xfs cannot
-  be checked yet, `fsck.xfs` does not exist, and `fsck.<TAB>` tells the
-  truth at completion time rather than as a runtime failure. (This is
-  why properties are NOT dotted verbs — see the interface contract:
-  their support is per-key, so a link could not carry it.)
+- forty tab-completion hits on `r<TAB>`, `w<TAB>`, `l<TAB>`;
+- forty chances to collide with another project's tool. This document
+  already declines a bare `mkfs` because it is "the worst possible
+  collision candidate", and that risk scales with every name claimed;
+- forty things to remove cleanly on uninstall.
+
+Twelve names that each mean something beat forty that mostly restate
+`ls`.
 
 ### No `mkfs` dispatcher of our own
 
