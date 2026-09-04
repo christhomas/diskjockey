@@ -298,11 +298,29 @@ filesystems answer the same way.
    the help, not by giving it a verb of its own — a separate verb would
    not make it any less expensive, only harder to find.
 
-   **`info` is NOT folded into `get`**, though it looks like the same
-   family. They have different output contracts: `info` dumps the whole
-   envelope as JSON, `get` returns one bare value so
-   `$(get.ext4 disk.img label)` works in a script. Merging them means
-   one of those two uses gets a worse answer.
+   **`info` and `get` are the same tool under two names.** An earlier
+   draft justified keeping them apart by claiming different output
+   contracts — `info` for the whole envelope, `get` for one bare value.
+   That was wrong. A key argument and the `--text` flag this document
+   already mandates cover both in one verb:
+
+   ```
+   info.ext4 disk.img                 # whole envelope
+   info.ext4 disk.img label --text    # one bare value
+   ```
+
+   What actually argues for two names is narrower, and it is
+   discoverability against symmetry. `info` is the conventional name —
+   `xfs_info`, `ntfsinfo`, `dumpe2fs` — and is what someone asking "what
+   IS this filesystem" reaches for. But `get`/`set` is a pair, and
+   `info`/`set` is not: a reader who has learnt `set.ext4 disk.img label
+   X` will guess `get.ext4 disk.img label`.
+
+   The multi-call design settles that cheaply. One binary dispatching on
+   `argv[0]` means a second name is **one more symlink and no code at
+   all** — so both exist, with one implementation behind them. That is
+   not the compromise it would be if these were separate binaries; it is
+   the same property that makes the whole verb matrix affordable.
 
 **Enforcement:** the verb set, flag vocabulary and output envelope live
 in a shared crate that each filesystem *fills in*. A new filesystem then
