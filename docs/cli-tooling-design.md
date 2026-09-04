@@ -298,27 +298,44 @@ filesystems answer the same way.
      subcommands. Support is per-key and has to be discovered by
      asking, which is what `fs.<fs> <target> get` with no key does.
 
-   **Human-readable by default, `--json` to opt in.** One rule, applied
-   the same way whether or not a key was given:
+   **JSON by default; `--text` for humans.** These tools exist to be
+   driven — the automated test pipeline is the primary consumer, not
+   someone at a prompt — so the default is the format that consumer
+   wants, and the escape hatch points the other way.
 
    ```
-   fs.ext4 disk.img get              # key = value table
-   fs.ext4 disk.img get label        # Backup
-   fs.ext4 disk.img get --json       # { "label": "Backup", ... }
-   fs.ext4 disk.img get label --json # { "label": "Backup" }
+   fs.ext4 disk.img get              # { "label": "Backup", ... }
+   fs.ext4 disk.img get label        # { "label": "Backup" }
+   fs.ext4 disk.img get label --text # Backup
    ```
 
-   An earlier draft branched on the shape of the answer — JSON for the
-   whole document, bare text for a single key. It reads well and is
-   worse: you have to remember which you will get. The flat rule keeps
-   `$(fs.ext4 disk.img get label)` working with no flag, which is the
-   case that matters most, and matches what `gh`, `docker` and
-   `kubectl` do.
+   Two things JSON buys that text cannot. Values are unambiguous — a
+   label with a trailing space or an embedded newline, a UUID as bytes,
+   a null all survive, where bare text quietly mangles them. And errors
+   are structured: `{"error": "...", "code": 4}` beats parsing stderr,
+   which for a pipeline is worth more than the query output is.
 
-   The honest cost: bare text cannot unambiguously express a label with
-   a trailing space or an embedded newline. `git config` has precisely
-   this problem and still prints bare, because the ergonomics win and
-   `--json` is one flag away for anyone who cares.
+   **One carve-out, and it is forced rather than chosen:** `read` writes
+   FILE BYTES to stdout and `write` consumes them on stdin. Wrapping
+   arbitrary binary in JSON means base64, which makes the ordinary
+   `read.ext4 disk.img /path > out.bin` both wrong and expensive. So:
+
+   | | default |
+   |---|---|
+   | `get` `info` `ls` `fsck` `mkfs` `resize` `set` | JSON |
+   | `read` (stdout), `write` (stdin) | raw bytes |
+
+   The rule is **metadata is JSON, file content is raw**, which is easy
+   to remember because it follows what the data is.
+
+   `ls` gains the most: name, size, mode and mtime as fields rather
+   than columns to parse — the shape that otherwise breaks silently on a
+   filename containing a space.
+
+   The cost, stated plainly: `$(fs.ext4 disk.img get label)` now yields
+   `"Backup"` WITH QUOTES, so shell one-liners need `--text` or
+   `jq -r`. That is the trade — worse at a prompt, better for everything
+   driving these programmatically.
 
    `tune.<fs>` was considered for the name, since `tune2fs` is precisely
    this tool. It implies write-only, and half of this is reading.
