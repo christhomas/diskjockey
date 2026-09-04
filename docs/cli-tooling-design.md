@@ -358,13 +358,47 @@ inherits Apple's machinery.
 |---|---|---|
 | rust-fs-ext4 | `mkfs_ext4` | rename to `mkfs.ext4` |
 | rust-fs-erofs | `mkfs_erofs` | rename to `mkfs.erofs` |
-| rust-fs-ntfs | `rust-ntfs` (**test-harness driver**) | add a thin `mkfs.ntfs` |
+| rust-fs-ntfs | `rust-ntfs` (**test-harness driver**) | `mkfs.ntfs` added |
 | rust-fs-squashfs | `lssquashfs` | fold into the verb scheme |
 | rust-blk-probe | `diskprobe` | already correctly named |
 | rust-img-qcow2 | `qcow2_tool` | rename — `_tool` says nothing |
 | rust-img-vhd | `vhd_tool` | rename |
-| rust-fs-xfs | — | steps 1b, 1c |
-| rust-fs-btrfs | — | step 2 |
+| rust-fs-xfs | — | **mkfs deferred — see below**; read verbs first |
+| rust-fs-btrfs | — | **mkfs deferred — see below**; read verbs first |
+
+### Why `mkfs.xfs` and `mkfs.btrfs` are deferred — measured 2026-09-04
+
+Neither crate can format, and that is not a wrapper away. Worth stating
+precisely, because both look far closer than they are.
+
+`am-fs-xfs` has `super_write`, `group_write`, `log_write`, `create`,
+`alloc_btree`, `inode_btree` and `dir_write`. `am-fs-btrfs` has
+`super_write`, `tree_write`, `extent_write`, `commit` and `transaction`.
+Read as a file list, that is most of a formatter.
+
+It is not, because **every one of those modules edits a filesystem that
+already exists.** `group_write`'s public surface is `rebuild_leaf`,
+`rebuild_inode_leaf`, `changed_chunks`, `restamp_crc` — each takes the
+buffer it is amending. `create` makes a file inside a transaction on a
+mounted volume. Nothing in either crate computes an *initial layout*:
+allocation-group count and size, empty allocation and inode btrees, the
+root inode, an initialised log.
+
+The one exception is the XFS superblock, modelled field by field and
+buildable from nothing. That is the first of roughly six pieces, not
+the last.
+
+Confirming it from the other direction: neither crate has a
+`format_filesystem` or `build_image` entry point. `am-fs-ext4`,
+`am-fs-ntfs` and `am-fs-erofs` each do, and their `mkfs.*` binaries are
+thin wrappers around exactly that one function.
+
+**So: defer.** The ordering note below is the second reason rather than
+an afterthought. `ls.xfs`, `cat.xfs` and `info.xfs` are wrappers over
+`mount`, `dir_*`, `read_file`, `stat` and `get_volume_info` — all of
+which exist in both crates today. `mkfs.xfs` is a new subsystem.
+Someone can borrow a Linux box to *create* an XFS filesystem; they
+installed this to read one that will not mount.
 
 `rust-ntfs` is **not** a formatter: it is the driver
 `fs-test-harness.toml` invokes to exercise write paths inside the
