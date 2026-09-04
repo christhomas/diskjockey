@@ -98,7 +98,8 @@ info.ext4    disk.img
 ls.ext4      disk.img /the/subdirectory
 read.ext4    disk.img /path/to/file          # stdout, or -o out.bin
 write.ext4   disk.img /path/to/file < input
-resize.ext4  disk.img 20G
+get.ext4     disk.img label
+set.ext4     disk.img size 20G
 ```
 
 ### `read`/`write`, not `cat`
@@ -250,6 +251,30 @@ filesystems answer the same way.
    A new property is a new key, not a new command. ntfs already
    implements `set_volume_label`, `read_volume_label`, `is_dirty` and
    `clear_dirty`, so this has working code behind it today.
+
+   **Size is a property too, so there is no `resize` verb.** An earlier
+   draft had one, which was this document making the exact mistake it
+   criticises one paragraph earlier: Linux has `resize2fs`,
+   `xfs_growfs`, `ntfsresize` and `btrfs filesystem resize` for one
+   concept, the same way it has four spellings of "label".
+
+   ```
+   set.ext4 disk.img size 20G
+   ```
+
+   One caveat that has to be written down rather than glossed: every
+   other property here is a field write and returns instantly, whereas
+   setting `size` relocates data, can take minutes and can fail partway.
+   Sitting in a namespace of cheap operations makes it look cheaper than
+   it is. That is answered by requiring `--force` and by saying so in
+   the help, not by giving it a verb of its own — a separate verb would
+   not make it any less expensive, only harder to find.
+
+   **`info` is NOT folded into `get`**, though it looks like the same
+   family. They have different output contracts: `info` dumps the whole
+   envelope as JSON, `get` returns one bare value so
+   `$(get.ext4 disk.img label)` works in a script. Merging them means
+   one of those two uses gets a worse answer.
 
 **Enforcement:** the verb set, flag vocabulary and output envelope live
 in a shared crate that each filesystem *fills in*. A new filesystem then
