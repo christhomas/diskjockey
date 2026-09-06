@@ -344,12 +344,19 @@ final class EXT4Backend: FileSystemBackend {
         }
     }
 
+    /// Seconds are `Int64` as of am-fs-ext4 0.5.0. The old `UInt32`
+    /// parameter clamped, and both ends of the clamp were wrong: a date
+    /// before 1970 became 1970, and a date past 2106 became `UInt32.max`
+    /// -- which was the "leave unchanged" sentinel, so setting a far
+    /// future time silently set nothing. `tv_sec` is already `Int`, so
+    /// it now passes through untouched and the driver rejects anything
+    /// ext4 genuinely cannot store.
     func utimens(path: String, atime: timespec?, mtime: timespec?) -> Bool {
         state.withLock { handle in
             guard let fs = handle.ptr else { return false }
-            let aSec: UInt32 = atime.map { UInt32(clamping: $0.tv_sec) } ?? ~UInt32(0)
+            let aSec = atime.map { Int64($0.tv_sec) } ?? FS_EXT4_TIME_OMIT
             let aNsec: UInt32 = atime.map { UInt32(clamping: $0.tv_nsec) } ?? 0
-            let mSec: UInt32 = mtime.map { UInt32(clamping: $0.tv_sec) } ?? ~UInt32(0)
+            let mSec = mtime.map { Int64($0.tv_sec) } ?? FS_EXT4_TIME_OMIT
             let mNsec: UInt32 = mtime.map { UInt32(clamping: $0.tv_nsec) } ?? 0
             return fs_ext4_utimens(fs, path, aSec, aNsec, mSec, mNsec) == 0
         }

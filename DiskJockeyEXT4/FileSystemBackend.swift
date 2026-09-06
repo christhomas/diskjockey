@@ -30,10 +30,19 @@ struct BackendFileAttributes {
     var gid: UInt32
     var size: UInt64
     var linkCount: UInt16
-    var atime: UInt32
-    var mtime: UInt32
-    var ctime: UInt32
-    var crtime: UInt32
+    /// SECONDS ARE SIGNED AND SIXTY-FOUR BITS WIDE, matching the driver
+    /// as of am-fs-ext4 0.5.0 and the on-disk field it comes from.
+    ///
+    /// ext4's base timestamp is a signed 32-bit value that its matching
+    /// `*_extra` field extends by two more bits, so the real range is
+    /// roughly 1901 to 2446. Held as `UInt32` here, everything before
+    /// 1970 read back as a date in the far future and everything after
+    /// 2038 was truncated -- and neither showed up as an error, only as
+    /// a wrong date in the Finder.
+    var atime: Int64
+    var mtime: Int64
+    var ctime: Int64
+    var crtime: Int64
 }
 
 struct BackendDirectoryEntry {
